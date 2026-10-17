@@ -30,12 +30,11 @@ type Difficulty string
 const (
 	DifficultyEasy   Difficulty = "easy"
 	DifficultyMedium Difficulty = "medium"
-	DifficultyHard   Difficulty = "hard"
 )
 
 func (d Difficulty) valid() bool {
 	switch d {
-	case DifficultyEasy, DifficultyMedium, DifficultyHard:
+	case DifficultyEasy, DifficultyMedium:
 		return true
 	default:
 		return false

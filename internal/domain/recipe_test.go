@@ -55,12 +55,8 @@ func TestRecipeValidateAcceptsEveryEnumValue(t *testing.T) {
 		name   string
 		mutate func(*Recipe)
 	}{
-		{name: "breakfast", mutate: func(recipe *Recipe) { recipe.MealType = MealTypeBreakfast }},
-		{name: "lunch", mutate: func(recipe *Recipe) { recipe.MealType = MealTypeLunch }},
-		{name: "dinner", mutate: func(recipe *Recipe) { recipe.MealType = MealTypeDinner }},
 		{name: "easy", mutate: func(recipe *Recipe) { recipe.Difficulty = DifficultyEasy }},
 		{name: "medium difficulty", mutate: func(recipe *Recipe) { recipe.Difficulty = DifficultyMedium }},
-		{name: "hard", mutate: func(recipe *Recipe) { recipe.Difficulty = DifficultyHard }},
 		{name: "low budget", mutate: func(recipe *Recipe) { recipe.BudgetLevel = BudgetLevelLow }},
 		{name: "medium budget", mutate: func(recipe *Recipe) { recipe.BudgetLevel = BudgetLevelMedium }},
 		{name: "high budget", mutate: func(recipe *Recipe) { recipe.BudgetLevel = BudgetLevelHigh }},
@@ -80,6 +76,29 @@ func TestRecipeValidateAcceptsEveryEnumValue(t *testing.T) {
 	}
 }
 
+func TestRecipeValidateAcceptsMealTypeCombinations(t *testing.T) {
+	tests := []struct {
+		name      string
+		mealTypes []MealType
+	}{
+		{name: "breakfast only", mealTypes: []MealType{MealTypeBreakfast}},
+		{name: "lunch only", mealTypes: []MealType{MealTypeLunch}},
+		{name: "dinner only", mealTypes: []MealType{MealTypeDinner}},
+		{name: "lunch and dinner", mealTypes: []MealType{MealTypeLunch, MealTypeDinner}},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			recipe := validRecipe()
+			recipe.MealTypes = test.mealTypes
+
+			if err := recipe.Validate(); err != nil {
+				t.Fatalf("Validate() error = %v, want nil", err)
+			}
+		})
+	}
+}
+
 func TestRecipeValidateRejectsInvalidRecipes(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -90,8 +109,10 @@ func TestRecipeValidateRejectsInvalidRecipes(t *testing.T) {
 		{name: "whitespace ID", mutate: func(recipe *Recipe) { recipe.ID = " \t" }, wantError: "recipe ID"},
 		{name: "empty name", mutate: func(recipe *Recipe) { recipe.Name = "" }, wantError: "recipe name"},
 		{name: "whitespace name", mutate: func(recipe *Recipe) { recipe.Name = " \n" }, wantError: "recipe name"},
-		{name: "empty meal type", mutate: func(recipe *Recipe) { recipe.MealType = "" }, wantError: "meal type"},
-		{name: "unknown meal type", mutate: func(recipe *Recipe) { recipe.MealType = "snack" }, wantError: "meal type"},
+		{name: "nil meal types", mutate: func(recipe *Recipe) { recipe.MealTypes = nil }, wantError: "at least one meal type"},
+		{name: "empty meal types", mutate: func(recipe *Recipe) { recipe.MealTypes = []MealType{} }, wantError: "at least one meal type"},
+		{name: "invalid meal type", mutate: func(recipe *Recipe) { recipe.MealTypes = []MealType{MealTypeLunch, "snack"} }, wantError: "meal type at index 1"},
+		{name: "duplicate meal type", mutate: func(recipe *Recipe) { recipe.MealTypes = []MealType{MealTypeLunch, MealTypeLunch} }, wantError: "duplicated"},
 		{name: "empty category", mutate: func(recipe *Recipe) { recipe.Category = "" }, wantError: "category"},
 		{name: "whitespace category", mutate: func(recipe *Recipe) { recipe.Category = "  " }, wantError: "category"},
 		{name: "zero servings", mutate: func(recipe *Recipe) { recipe.Servings = 0 }, wantError: "servings"},
@@ -131,7 +152,7 @@ func validRecipe() Recipe {
 	return Recipe{
 		ID:                  "recipe-1",
 		Name:                "Vegetable stew",
-		MealType:            MealTypeDinner,
+		MealTypes:           []MealType{MealTypeDinner},
 		Category:            "stew",
 		Servings:            6,
 		PreparationDuration: 15 * time.Minute,
