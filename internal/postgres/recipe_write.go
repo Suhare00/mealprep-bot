@@ -80,7 +80,10 @@ func insertRelations(ctx context.Context, tx pgx.Tx, entry recipecatalogue.Catal
 			return fmt.Errorf("ingredient %q already exists with a different name", ingredient.ID)
 		}
 	}
+	return insertOwnedRelations(ctx, tx, entry)
+}
 
+func insertOwnedRelations(ctx context.Context, tx pgx.Tx, entry recipecatalogue.CatalogueEntry) error {
 	mealTypes := append([]domain.MealType(nil), entry.Recipe.MealTypes...)
 	sort.Slice(mealTypes, func(i, j int) bool { return mealTypes[i] < mealTypes[j] })
 	for _, mealType := range mealTypes {
