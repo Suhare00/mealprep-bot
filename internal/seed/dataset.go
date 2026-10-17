@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"time"
 
 	"github.com/Suhare00/mealprep-bot/internal/domain"
 	recipecatalogue "github.com/Suhare00/mealprep-bot/internal/recipe"
@@ -53,6 +54,12 @@ func (d Dataset) Validate() error {
 func validateEntry(entry recipecatalogue.CatalogueEntry, catalogue map[domain.IngredientID]domain.Ingredient) error {
 	if err := entry.Recipe.Validate(); err != nil {
 		return err
+	}
+	if entry.Recipe.PreparationDuration%time.Second != 0 {
+		return errors.New("preparation duration must use whole seconds")
+	}
+	if entry.Recipe.CookingDuration%time.Second != 0 {
+		return errors.New("cooking duration must use whole seconds")
 	}
 	seenTags := make(map[string]struct{}, len(entry.Recipe.Tags))
 	for _, tag := range entry.Recipe.Tags {

@@ -6,7 +6,9 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -114,6 +116,46 @@ func TestSeedWorkflowRejectsMalformedInputBeforeDatabaseMutation(t *testing.T) {
 		t.Fatal("Load() error = nil, want malformed boolean error")
 	}
 	assertSeedCounts(t, pool, 0, 0, 0, 0, 0)
+}
+
+func TestSeedImporterRejectsSubSecondDurationsBeforeDatabaseMutation(t *testing.T) {
+	tests := []struct {
+		name      string
+		mutate    func(*domain.Recipe)
+		wantError string
+	}{
+		{
+			name: "preparation duration",
+			mutate: func(recipe *domain.Recipe) {
+				recipe.PreparationDuration = 1500 * time.Millisecond
+			},
+			wantError: "preparation duration must use whole seconds",
+		},
+		{
+			name: "cooking duration",
+			mutate: func(recipe *domain.Recipe) {
+				recipe.CookingDuration = 1500 * time.Millisecond
+			},
+			wantError: "cooking duration must use whole seconds",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			pool, _ := newTestRepository(t)
+			dataset := loadCanonicalDataset(t)
+			test.mutate(&dataset.Entries[0].Recipe)
+
+			_, err := NewSeedImporter(pool).Import(t.Context(), dataset)
+			if err == nil {
+				t.Fatalf("Import() error = nil, want text %q", test.wantError)
+			}
+			if !strings.Contains(err.Error(), test.wantError) {
+				t.Fatalf("Import() error = %q, want text %q", err, test.wantError)
+			}
+			assertSeedCounts(t, pool, 0, 0, 0, 0, 0)
+		})
+	}
 }
 
 func TestSeedImporterPersistenceFailureRollsBackEverything(t *testing.T) {
