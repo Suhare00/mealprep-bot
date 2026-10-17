@@ -165,6 +165,84 @@ func TestBotPropagatesTelegramAPIErrors(t *testing.T) {
 	})
 }
 
+func TestBotRecoversFromStaleCallbackMessage(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	client := &fakeClient{
+		editErr: &apiError{
+			method:      "editMessageText",
+			code:        400,
+			description: "Bad Request: message to edit not found",
+		},
+	}
+	client.getUpdates = func(ctx context.Context, offset int64, _ int) ([]Update, error) {
+		client.offsets = append(client.offsets, offset)
+		if len(client.offsets) == 1 {
+			update := callbackUpdate("m")
+			update.UpdateID = 7
+			return []Update{update}, nil
+		}
+		cancel()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	if err := newTestBot(client, &fakeCatalogue{}).Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(client.answered) != 1 {
+		t.Fatalf("answered callbacks = %v", client.answered)
+	}
+	if len(client.sent) != 1 || !strings.Contains(client.sent[0].message.Text, "Добро пожаловать") {
+		t.Fatalf("fallback messages = %#v", client.sent)
+	}
+	if len(client.offsets) != 2 || client.offsets[1] != 8 {
+		t.Fatalf("getUpdates offsets = %v, want [0 8]", client.offsets)
+	}
+}
+
+func TestBotStaleCallbackFallbackPreservesUnexpectedErrors(t *testing.T) {
+	tests := []struct {
+		name      string
+		editErr   error
+		sendErr   error
+		wantError error
+		wantSent  int
+	}{
+		{
+			name:      "unexpected edit error",
+			editErr:   errors.New("telegram unavailable"),
+			wantError: errors.New("telegram unavailable"),
+		},
+		{
+			name: "fallback send error",
+			editErr: &apiError{
+				method:      "editMessageText",
+				code:        400,
+				description: "Bad Request: message can't be edited",
+			},
+			sendErr:   errors.New("fallback unavailable"),
+			wantError: errors.New("fallback unavailable"),
+			wantSent:  1,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			client := &fakeClient{editErr: test.editErr, sendErr: test.sendErr}
+			err := newTestBot(client, &fakeCatalogue{}).HandleUpdate(t.Context(), callbackUpdate("m"))
+			if err == nil || !strings.Contains(err.Error(), test.wantError.Error()) {
+				t.Fatalf("HandleUpdate() error = %v, want %q", err, test.wantError)
+			}
+			if len(client.answered) != 1 {
+				t.Fatalf("answered callbacks = %v", client.answered)
+			}
+			if len(client.sent) != test.wantSent {
+				t.Fatalf("sent messages = %d, want %d", len(client.sent), test.wantSent)
+			}
+		})
+	}
+}
+
 func TestBotIgnoresUnsupportedAndNonPrivateUpdates(t *testing.T) {
 	client := &fakeClient{}
 	bot := newTestBot(client, &fakeCatalogue{})
@@ -213,6 +291,61 @@ func TestBotRunRejectsActiveWebhook(t *testing.T) {
 	err := newTestBot(client, &fakeCatalogue{}).Run(t.Context())
 	if err == nil || !strings.Contains(err.Error(), "webhook is active") {
 		t.Fatalf("Run() error = %v", err)
+	}
+}
+
+func TestBotRunFailsFastOnPollingConflict(t *testing.T) {
+	client := &fakeClient{}
+	calls := 0
+	client.getUpdates = func(context.Context, int64, int) ([]Update, error) {
+		calls++
+		return nil, &apiError{method: "getUpdates", code: 409, description: "Conflict: terminated by other getUpdates request"}
+	}
+	bot := newTestBot(client, &fakeCatalogue{})
+	waits := 0
+	bot.wait = func(context.Context, time.Duration) error {
+		waits++
+		return nil
+	}
+
+	err := bot.Run(t.Context())
+	if err == nil || !strings.Contains(err.Error(), "another polling consumer") {
+		t.Fatalf("Run() error = %v, want actionable polling conflict", err)
+	}
+	if calls != 1 || waits != 0 {
+		t.Fatalf("getUpdates calls = %d, waits = %d; want one call and no retry", calls, waits)
+	}
+}
+
+func TestBotRunRetriesTransientPollingErrorsWithExponentialBackoff(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	client := &fakeClient{}
+	calls := 0
+	client.getUpdates = func(ctx context.Context, _ int64, _ int) ([]Update, error) {
+		calls++
+		if calls <= 2 {
+			return nil, errors.New("temporary network failure")
+		}
+		cancel()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+	bot := newTestBot(client, &fakeCatalogue{})
+	var delays []time.Duration
+	bot.wait = func(_ context.Context, delay time.Duration) error {
+		delays = append(delays, delay)
+		return nil
+	}
+
+	if err := bot.Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("getUpdates calls = %d, want 3", calls)
+	}
+	want := []time.Duration{time.Second, 2 * time.Second}
+	if len(delays) != len(want) || delays[0] != want[0] || delays[1] != want[1] {
+		t.Fatalf("backoff delays = %v, want %v", delays, want)
 	}
 }
 

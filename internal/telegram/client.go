@@ -122,6 +122,32 @@ func IsMessageNotModified(err error) bool {
 	return errors.As(err, &target) && strings.Contains(strings.ToLower(target.description), "message is not modified")
 }
 
+func isRecoverableMessageEditError(err error) bool {
+	var target *apiError
+	if !errors.As(err, &target) || target.method != "editMessageText" || target.code != http.StatusBadRequest {
+		return false
+	}
+
+	description := strings.ToLower(target.description)
+	for _, text := range []string{
+		"message to edit not found",
+		"message can't be edited",
+		"message can not be edited",
+		"message cannot be edited",
+		"message is too old",
+	} {
+		if strings.Contains(description, text) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPermanentPollingError(err error) bool {
+	var target *apiError
+	return errors.As(err, &target) && target.method == "getUpdates" && target.code == http.StatusConflict
+}
+
 func call[T any](ctx context.Context, client *APIClient, method string, payload any) (T, error) {
 	var zero T
 	body, err := json.Marshal(payload)
@@ -154,7 +180,11 @@ func call[T any](ctx context.Context, client *APIClient, method string, payload 
 		if description == "" {
 			description = http.StatusText(response.StatusCode)
 		}
-		return zero, &apiError{method: method, code: decoded.ErrorCode, description: description}
+		code := decoded.ErrorCode
+		if code == 0 {
+			code = response.StatusCode
+		}
+		return zero, &apiError{method: method, code: code, description: description}
 	}
 	return decoded.Result, nil
 }

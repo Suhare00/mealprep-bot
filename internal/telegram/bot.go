@@ -29,11 +29,12 @@ type Bot struct {
 	client    Client
 	catalogue Catalogue
 	logger    *slog.Logger
+	wait      func(context.Context, time.Duration) error
 }
 
 // NewBot constructs the Telegram delivery adapter.
 func NewBot(client Client, catalogue Catalogue, logger *slog.Logger) *Bot {
-	return &Bot{client: client, catalogue: catalogue, logger: logger}
+	return &Bot{client: client, catalogue: catalogue, logger: logger, wait: wait}
 }
 
 // Run verifies long-poll compatibility and consumes updates until cancellation.
@@ -56,8 +57,11 @@ func (b *Bot) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
+			if isPermanentPollingError(err) {
+				return fmt.Errorf("telegram long polling conflict: another polling consumer may be using this bot token: %w", err)
+			}
 			b.logger.Warn("Telegram polling failed; retrying", "error", err, "backoff", backoff)
-			if err := wait(ctx, backoff); err != nil {
+			if err := b.wait(ctx, backoff); err != nil {
 				return nil
 			}
 			backoff = min(backoff*2, maximumBackoff)
@@ -175,6 +179,12 @@ func (b *Bot) loadCatalogue(ctx context.Context, page int) (OutgoingMessage, err
 func (b *Bot) edit(ctx context.Context, message Message, response OutgoingMessage) error {
 	err := b.client.EditMessage(ctx, message.Chat.ID, message.MessageID, response)
 	if IsMessageNotModified(err) {
+		return nil
+	}
+	if isRecoverableMessageEditError(err) && message.Chat.Type == "private" {
+		if sendErr := b.client.SendMessage(ctx, message.Chat.ID, response); sendErr != nil {
+			return fmt.Errorf("send navigation fallback: %w", sendErr)
+		}
 		return nil
 	}
 	if err != nil {
