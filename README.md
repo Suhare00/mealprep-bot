@@ -84,7 +84,7 @@ PowerShell equivalent:
 Copy-Item .env.example .env
 ```
 
-The application reads environment variables directly; it does not load `.env` itself. To run the complete local stack, Docker Compose reads `.env` automatically:
+The Go programs read environment variables directly; they do not load `.env` themselves. Docker Compose reads `.env` automatically and passes the configured values to its containers:
 
 ```sh
 docker compose up --build
@@ -92,13 +92,13 @@ docker compose up --build
 
 PostgreSQL is exposed on `localhost:5432` for host-side tools. Inside Compose, the application uses the `postgres` service hostname rather than `localhost`.
 
-To run the Go process directly, export the variables from `.env` in your shell first, then run:
+To run a Go process directly on the host, export the variables from `.env` in that shell first, then run:
 
 ```sh
 go run ./cmd/bot
 ```
 
-The current bootstrap validates `APP_ENV`, `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, and optional `LOG_LEVEL` at startup, emits structured JSON logs, and waits for `SIGINT` or `SIGTERM`. It intentionally does not connect to Telegram or PostgreSQL yet.
+The bot validates `APP_ENV`, `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, and optional `LOG_LEVEL`, connects to PostgreSQL, verifies connectivity, checks that no Telegram webhook is active, and then starts long polling. `SIGINT` and `SIGTERM` cancel polling and close the database pool cleanly. Logs are structured JSON and runtime errors redact configured credentials.
 
 Run the same checks used by CI with:
 
@@ -155,6 +155,45 @@ The canonical PostgreSQL import, idempotency, conflict, preservation and rollbac
 ```sh
 make test-integration
 ```
+
+## Telegram catalogue
+
+The Telegram MVP is read-only and supports private chats. It displays active recipes from PostgreSQL; it does not contain hardcoded recipe samples. Create a bot with [BotFather](https://t.me/BotFather), copy the token, and put it in your uncommitted `.env` as `TELEGRAM_BOT_TOKEN`. Never commit the real token.
+
+For a clean local setup:
+
+1. Copy `.env.example` to `.env` and replace the Telegram and PostgreSQL placeholders.
+2. Start PostgreSQL:
+
+   ```sh
+   docker compose up -d postgres
+   ```
+
+3. Apply the migration:
+
+   ```sh
+   make migrate-up
+   ```
+
+4. Import the canonical catalogue. Because `make seed` runs Go on the host, first export `DATABASE_URL` from `.env` into the current shell, then run:
+
+   ```sh
+   make seed
+   ```
+
+5. Build and start the bot container; Compose reads `.env` automatically:
+
+   ```sh
+   docker compose up -d --build app
+   ```
+
+   Alternatively, export all application variables from `.env` into the host shell and run `go run ./cmd/bot`.
+
+6. Open the bot in Telegram, send `/start`, and choose **Каталог рецептов**. `/recipes` opens the catalogue directly and `/help` shows the command list.
+
+The bot uses Telegram `getUpdates` long polling. A webhook and long polling cannot be active at the same time; startup fails with a clear error when a webhook URL is configured. Run only one polling process for a bot token. Polling uses a bounded retry delay for transient failures and stops on context cancellation. Successfully processed update offsets are sent with the next polling request, providing best-effort at-least-once handling across process restarts.
+
+The meal-planning button is an explicit placeholder. Meal plans, shopping lists, recipe editing, user history and ratings are not part of this MVP.
 
 ## PostgreSQL integration tests
 
