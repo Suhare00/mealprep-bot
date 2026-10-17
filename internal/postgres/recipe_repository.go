@@ -53,7 +53,7 @@ func (r *RecipeRepository) Create(ctx context.Context, entry recipecatalogue.Cat
 
 // GetByID retrieves a recipe regardless of active or inactive state.
 func (r *RecipeRepository) GetByID(ctx context.Context, id domain.RecipeID) (recipecatalogue.CatalogueEntry, error) {
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := r.pool.BeginTx(ctx, readTransactionOptions())
 	if err != nil {
 		return recipecatalogue.CatalogueEntry{}, fmt.Errorf("begin get recipe transaction: %w", err)
 	}
@@ -104,40 +104,28 @@ func (r *RecipeRepository) Update(ctx context.Context, entry recipecatalogue.Cat
 
 // ListActive returns all active recipes ordered by ID.
 func (r *RecipeRepository) ListActive(ctx context.Context) ([]recipecatalogue.CatalogueEntry, error) {
-	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := r.pool.BeginTx(ctx, readTransactionOptions())
 	if err != nil {
 		return nil, fmt.Errorf("begin list recipes transaction: %w", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 
-	rows, err := tx.Query(ctx, `SELECT id FROM recipes WHERE state = 'active' ORDER BY id`)
+	entries, err := loadActiveEntries(ctx, tx)
 	if err != nil {
-		return nil, fmt.Errorf("list active recipe IDs: %w", err)
-	}
-	ids, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (domain.RecipeID, error) {
-		var id string
-		if err := row.Scan(&id); err != nil {
-			return "", err
-		}
-		return domain.RecipeID(id), nil
-	})
-	if err != nil {
-		return nil, fmt.Errorf("scan active recipe IDs: %w", err)
-	}
-
-	entries := make([]recipecatalogue.CatalogueEntry, 0, len(ids))
-	for _, id := range ids {
-		entry, err := loadEntry(ctx, tx, id)
-		if err != nil {
-			return nil, fmt.Errorf("load active recipe %q: %w", id, err)
-		}
-		entries = append(entries, entry)
+		return nil, fmt.Errorf("load active recipes: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return nil, fmt.Errorf("commit list recipes transaction: %w", err)
 	}
 
 	return entries, nil
+}
+
+func readTransactionOptions() pgx.TxOptions {
+	return pgx.TxOptions{
+		IsoLevel:   pgx.RepeatableRead,
+		AccessMode: pgx.ReadOnly,
+	}
 }
 
 // Disable marks a recipe inactive without deleting its relations.
