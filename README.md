@@ -117,7 +117,10 @@ Start PostgreSQL and apply the current migration:
 ```sh
 docker compose up -d postgres
 make migrate-up
+make seed
 ```
+
+`make seed` reads `DATABASE_URL` from the environment. When using the values from `.env`, export them into the current shell before running host-side Go commands. The seed CLI can also read another directory with `go run ./cmd/seed -dir /path/to/seed`.
 
 Reverse it in dependency-safe order with:
 
@@ -126,6 +129,32 @@ make migrate-down
 ```
 
 The migration targets run `psql` inside the Compose PostgreSQL container and use its configured `POSTGRES_USER` and `POSTGRES_DB` values.
+
+## Canonical recipe seed
+
+The `seed/` directory contains the canonical v0.1 catalogue:
+
+- 90 recipes;
+- 84 ingredients;
+- 466 recipe-ingredient relations;
+- 155 recipe-meal-type relations;
+- 233 recipe-tag relations.
+
+The importer parses and validates the complete dataset before opening its database transaction. It then applies the catalogue atomically. Repeating the exact import is safe: identical records are reported as already present and are not rewritten or duplicated. If a canonical recipe or ingredient ID already exists with different data, the command fails and rolls back the entire import instead of overwriting it. Recipes and ingredients whose IDs are not part of the canonical seed are left untouched.
+
+`seed/provenance.csv` is retained as source documentation but is not imported because provenance is not yet part of the domain or database schema.
+
+Run parser and validation tests without PostgreSQL:
+
+```sh
+go test ./internal/seed ./cmd/seed
+```
+
+The canonical PostgreSQL import, idempotency, conflict, preservation and rollback scenarios are part of the existing integration suite:
+
+```sh
+make test-integration
+```
 
 ## PostgreSQL integration tests
 

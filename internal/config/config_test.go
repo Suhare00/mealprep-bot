@@ -65,6 +65,20 @@ func TestLoadRejectsInvalidLogLevel(t *testing.T) {
 	}
 }
 
+func TestLoadDatabaseURLDoesNotRequireServiceConfiguration(t *testing.T) {
+	t.Setenv(envDatabaseURL, "postgres://mealprep:secret@localhost:5432/mealprep")
+	t.Setenv(envAppEnvironment, "")
+	t.Setenv(envTelegramBotToken, "")
+
+	got, err := LoadDatabaseURL()
+	if err != nil {
+		t.Fatalf("LoadDatabaseURL() error = %v", err)
+	}
+	if got != "postgres://mealprep:secret@localhost:5432/mealprep" {
+		t.Fatalf("LoadDatabaseURL() = %q", got)
+	}
+}
+
 func setValidEnvironment(t *testing.T) {
 	t.Helper()
 	t.Setenv(envAppEnvironment, "development")

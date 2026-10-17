@@ -35,11 +35,8 @@ func Load() (Config, error) {
 		return Config{}, err
 	}
 
-	databaseURL, err := required(envDatabaseURL)
+	databaseURL, err := LoadDatabaseURL()
 	if err != nil {
-		return Config{}, err
-	}
-	if err := validateDatabaseURL(databaseURL); err != nil {
 		return Config{}, err
 	}
 
@@ -59,6 +56,19 @@ func Load() (Config, error) {
 		TelegramBotToken: telegramBotToken,
 		LogLevel:         logLevel,
 	}, nil
+}
+
+// LoadDatabaseURL reads and validates the PostgreSQL connection URL.
+// It supports database-only tools without requiring unrelated service settings.
+func LoadDatabaseURL() (string, error) {
+	databaseURL, err := required(envDatabaseURL)
+	if err != nil {
+		return "", err
+	}
+	if err := validateDatabaseURL(databaseURL); err != nil {
+		return "", err
+	}
+	return databaseURL, nil
 }
 
 func required(name string) (string, error) {
