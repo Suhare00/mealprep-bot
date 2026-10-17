@@ -3,15 +3,20 @@
 package postgres
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
 	"runtime"
 	"sort"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Suhare00/mealprep-bot/internal/domain"
@@ -74,6 +79,65 @@ func TestRecipeRepositoryCreateGetRoundTrip(t *testing.T) {
 	if quantityText != "1.25" {
 		t.Fatalf("stored quantity = %q, want 1.25", quantityText)
 	}
+}
+
+func TestRecipeRepositoryGetByIDUsesStableSnapshot(t *testing.T) {
+	hook := &queryEndHook{match: "FROM recipes WHERE id = $1"}
+	readerPool := openTestPoolWithTracer(t, hook)
+	applyMigration(t, readerPool, "000001_recipe_catalogue.down.sql")
+	applyMigration(t, readerPool, "000001_recipe_catalogue.up.sql")
+	repository := NewRecipeRepository(readerPool)
+	writerPool := openTestPool(t)
+
+	original := testEntry("recipe-stable-snapshot")
+	if err := repository.Create(t.Context(), original); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	updated := original
+	updated.Recipe.Name = "Updated concurrently"
+	updated.Recipe.Tags = []string{"concurrent"}
+	hook.run = func() error {
+		tx, err := writerPool.Begin(t.Context())
+		if err != nil {
+			return fmt.Errorf("begin concurrent update: %w", err)
+		}
+		defer func() { _ = tx.Rollback(t.Context()) }()
+		if _, err := tx.Exec(t.Context(), `UPDATE recipes SET name = $2 WHERE id = $1`,
+			string(updated.Recipe.ID), updated.Recipe.Name); err != nil {
+			return fmt.Errorf("update recipe concurrently: %w", err)
+		}
+		if _, err := tx.Exec(t.Context(), `DELETE FROM recipe_tags WHERE recipe_id = $1`,
+			string(updated.Recipe.ID)); err != nil {
+			return fmt.Errorf("delete tags concurrently: %w", err)
+		}
+		if _, err := tx.Exec(t.Context(), `INSERT INTO recipe_tags (recipe_id, tag) VALUES ($1, $2)`,
+			string(updated.Recipe.ID), updated.Recipe.Tags[0]); err != nil {
+			return fmt.Errorf("insert tag concurrently: %w", err)
+		}
+		if err := tx.Commit(t.Context()); err != nil {
+			return fmt.Errorf("commit concurrent update: %w", err)
+		}
+		return nil
+	}
+
+	got, err := repository.GetByID(t.Context(), original.Recipe.ID)
+	if err != nil {
+		t.Fatalf("GetByID() error = %v", err)
+	}
+	if hook.err != nil {
+		t.Fatalf("concurrent update: %v", hook.err)
+	}
+	if !hook.fired.Load() {
+		t.Fatal("concurrent update hook did not run")
+	}
+	assertEntriesEqual(t, got, original)
+
+	fresh, err := repository.GetByID(t.Context(), original.Recipe.ID)
+	if err != nil {
+		t.Fatalf("second GetByID() error = %v", err)
+	}
+	assertEntriesEqual(t, fresh, updated)
 }
 
 func TestRecipeRepositoryUpdateSynchronizesCompleteEntry(t *testing.T) {
@@ -144,6 +208,42 @@ func TestRecipeRepositoryDisablePreservesEntryAndListActiveFiltersIt(t *testing.
 	}
 	if len(entries) != 1 || entries[0].Recipe.ID != active.Recipe.ID {
 		t.Fatalf("ListActive() IDs = %v, want [%s]", entryIDs(entries), active.Recipe.ID)
+	}
+}
+
+func TestRecipeRepositoryListActiveBulkLoadsCompleteEntriesInOrder(t *testing.T) {
+	counter := &selectCounter{}
+	pool := openTestPoolWithTracer(t, counter)
+	applyMigration(t, pool, "000001_recipe_catalogue.down.sql")
+	applyMigration(t, pool, "000001_recipe_catalogue.up.sql")
+	repository := NewRecipeRepository(pool)
+
+	last := testEntry("recipe-z")
+	last.Recipe.Name = "Last recipe"
+	first := testEntry("recipe-a")
+	first.Recipe.Name = "First recipe"
+	first.Recipe.MealTypes = []domain.MealType{domain.MealTypeDinner}
+	first.Recipe.Tags = []string{"quick"}
+	first.Recipe.Ingredients[0].Quantity = 2.5
+
+	for _, entry := range []recipecatalogue.CatalogueEntry{last, first} {
+		if err := repository.Create(t.Context(), entry); err != nil {
+			t.Fatalf("Create(%s) error = %v", entry.Recipe.ID, err)
+		}
+	}
+
+	counter.count.Store(0)
+	got, err := repository.ListActive(t.Context())
+	if err != nil {
+		t.Fatalf("ListActive() error = %v", err)
+	}
+	if count := counter.count.Load(); count != 4 {
+		t.Fatalf("ListActive() SELECT count = %d, want 4", count)
+	}
+
+	want := []recipecatalogue.CatalogueEntry{sortedEntry(first), sortedEntry(last)}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("ListActive() mismatch\ngot:  %#v\nwant: %#v", got, want)
 	}
 }
 
@@ -268,12 +368,21 @@ func newTestRepository(t *testing.T) (*pgxpool.Pool, *RecipeRepository) {
 }
 
 func openTestPool(t *testing.T) *pgxpool.Pool {
+	return openTestPoolWithTracer(t, nil)
+}
+
+func openTestPoolWithTracer(t *testing.T, tracer pgx.QueryTracer) *pgxpool.Pool {
 	t.Helper()
 	databaseURL := os.Getenv(testDatabaseURLEnv)
 	if databaseURL == "" {
 		t.Fatalf("%s is required for integration tests", testDatabaseURLEnv)
 	}
-	pool, err := pgxpool.New(t.Context(), databaseURL)
+	config, err := pgxpool.ParseConfig(databaseURL)
+	if err != nil {
+		t.Fatalf("parse test database configuration: %v", err)
+	}
+	config.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(t.Context(), config)
 	if err != nil {
 		t.Fatalf("create test pool: %v", err)
 	}
@@ -283,6 +392,39 @@ func openTestPool(t *testing.T) *pgxpool.Pool {
 	}
 	t.Cleanup(pool.Close)
 	return pool
+}
+
+type selectCounter struct {
+	count atomic.Int64
+}
+
+func (c *selectCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.HasPrefix(strings.ToUpper(strings.TrimSpace(data.SQL)), "SELECT") {
+		c.count.Add(1)
+	}
+	return ctx
+}
+
+func (*selectCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+type queryEndHook struct {
+	match string
+	run   func() error
+	fired atomic.Bool
+	err   error
+}
+
+type querySQLContextKey struct{}
+
+func (*queryEndHook) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, querySQLContextKey{}, data.SQL)
+}
+
+func (h *queryEndHook) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	query, _ := ctx.Value(querySQLContextKey{}).(string)
+	if strings.Contains(query, h.match) && h.fired.CompareAndSwap(false, true) {
+		h.err = h.run()
+	}
 }
 
 func applyMigration(t *testing.T, pool *pgxpool.Pool, name string) {
