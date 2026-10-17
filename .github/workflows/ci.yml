@@ -48,7 +48,7 @@ jobs:
         run: go test ./...
 
       - name: Test PostgreSQL integration
-        run: go test -tags=integration ./internal/postgres -count=1
+        run: make test-integration
 
       - name: Test with race detector
         run: go test -race ./...

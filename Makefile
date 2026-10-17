@@ -16,6 +16,7 @@ test:
 	go test ./...
 
 test-integration:
+	go test -tags=integration ./cmd/seed -count=1
 	go test -tags=integration ./internal/postgres -count=1
 
 race:
