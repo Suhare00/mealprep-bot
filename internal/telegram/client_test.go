@@ -53,6 +53,73 @@ func TestAPIClientUsesTelegramResponseStatus(t *testing.T) {
 	}
 }
 
+func TestTelegramErrorClassification(t *testing.T) {
+	tests := []struct {
+		name            string
+		err             error
+		wantRecoverable bool
+		wantPermanent   bool
+	}{
+		{
+			name:            "missing message",
+			err:             &apiError{method: "editMessageText", code: 400, description: "Bad Request: message to edit not found"},
+			wantRecoverable: true,
+		},
+		{
+			name:            "non-editable message",
+			err:             &apiError{method: "editMessageText", code: 400, description: "Bad Request: message can't be edited"},
+			wantRecoverable: true,
+		},
+		{
+			name:          "polling conflict",
+			err:           &apiError{method: "getUpdates", code: 409, description: "Conflict"},
+			wantPermanent: true,
+		},
+		{
+			name: "edit authentication failure",
+			err:  &apiError{method: "editMessageText", code: 401, description: "Unauthorized: message to edit not found"},
+		},
+		{
+			name: "unrelated bad request",
+			err:  &apiError{method: "editMessageText", code: 400, description: "Bad Request: chat not found"},
+		},
+		{
+			name: "transient polling failure",
+			err:  &apiError{method: "getUpdates", code: 500, description: "Internal Server Error"},
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isRecoverableMessageEditError(test.err); got != test.wantRecoverable {
+				t.Fatalf("isRecoverableMessageEditError() = %v, want %v", got, test.wantRecoverable)
+			}
+			if got := isPermanentPollingError(test.err); got != test.wantPermanent {
+				t.Fatalf("isPermanentPollingError() = %v, want %v", got, test.wantPermanent)
+			}
+		})
+	}
+}
+
+func TestAPIClientPollingConflictIsTypedAndSanitized(t *testing.T) {
+	const token = "123456:super-secret"
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"ok":false,"error_code":409,"description":"Conflict: token 123456:super-secret terminated by other getUpdates request"}`))
+	}))
+	defer server.Close()
+
+	client := newAPIClient(token, server.URL, server.Client())
+	_, err := client.GetUpdates(t.Context(), 0, 30)
+	if !isPermanentPollingError(err) {
+		t.Fatalf("GetUpdates() error = %v, want permanent polling error", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("GetUpdates() leaked token: %v", err)
+	}
+}
+
 func TestAPIClientRedactsTokenFromNetworkErrors(t *testing.T) {
 	const token = "123456:super-secret"
 	client := newAPIClient(token, "https://api.telegram.invalid", &http.Client{
