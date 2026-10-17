@@ -108,6 +108,51 @@ make check
 
 Individual targets are available for `fmt`, `fmt-check`, `vet`, `test`, `build`, `lint`, and `compose-config`.
 
+## PostgreSQL migrations
+
+Recipe catalogue migrations are explicit SQL files under `migrations/`. Durations are stored as whole seconds in `BIGINT` columns and ingredient quantities use PostgreSQL `NUMERIC`.
+
+Start PostgreSQL and apply the current migration:
+
+```sh
+docker compose up -d postgres
+make migrate-up
+```
+
+Reverse it in dependency-safe order with:
+
+```sh
+make migrate-down
+```
+
+The migration targets run `psql` inside the Compose PostgreSQL container and use its configured `POSTGRES_USER` and `POSTGRES_DB` values.
+
+## PostgreSQL integration tests
+
+Integration tests use the `integration` build tag and require a dedicated disposable PostgreSQL database. Ordinary `go test ./...` does not connect to PostgreSQL.
+
+With the Compose database running, create the test database once:
+
+```sh
+docker compose exec -T postgres sh -c 'createdb -U "$POSTGRES_USER" mealprep_test'
+```
+
+Set `TEST_DATABASE_URL` to that database and run the suite:
+
+```sh
+export TEST_DATABASE_URL='postgres://mealprep:your-local-password@localhost:5432/mealprep_test?sslmode=disable'
+make test-integration
+```
+
+PowerShell equivalent:
+
+```powershell
+$env:TEST_DATABASE_URL = 'postgres://mealprep:your-local-password@localhost:5432/mealprep_test?sslmode=disable'
+make test-integration
+```
+
+The integration suite drops and recreates the recipe catalogue tables, so never point `TEST_DATABASE_URL` at production or a database containing data you need.
+
 ## Development approach
 
 Development is issue-driven. Each meaningful feature should be implemented in a dedicated branch and merged through a pull request after tests and review pass.
@@ -119,4 +164,3 @@ AI-assisted coding may be used as development tooling, but architecture, require
 Early foundation stage.
 
 See GitHub Issues for the current development plan.
-
