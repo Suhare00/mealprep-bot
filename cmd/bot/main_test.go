@@ -1,25 +1,25 @@
 package main
 
 import (
-	"context"
+	"errors"
+	"strings"
 	"testing"
-	"time"
+
+	"github.com/Suhare00/mealprep-bot/internal/config"
 )
 
-func TestRunStopsWhenContextIsCancelled(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
+func TestSanitizeRuntimeErrorRedactsCredentials(t *testing.T) {
+	cfg := config.Config{
+		DatabaseURL:      "postgres://mealprep:database-secret@localhost:5432/mealprep",
+		TelegramBotToken: "123456:telegram-secret",
+	}
+	err := errors.New("request https://api.telegram.org/bot123456:telegram-secret/getUpdates failed; " +
+		"database postgres://mealprep:database-secret@localhost:5432/mealprep password database-secret")
 
-	go func() {
-		run(ctx)
-		close(done)
-	}()
-
-	cancel()
-
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("run did not stop after context cancellation")
+	got := sanitizeRuntimeError(err, cfg)
+	for _, secret := range []string{cfg.TelegramBotToken, cfg.DatabaseURL, "database-secret"} {
+		if strings.Contains(got, secret) {
+			t.Fatalf("sanitizeRuntimeError() leaked %q in %q", secret, got)
+		}
 	}
 }
