@@ -11,7 +11,7 @@ import (
 type Recipe struct {
 	ID                  RecipeID
 	Name                string
-	MealType            MealType
+	MealTypes           []MealType
 	Category            string
 	Servings            int
 	PreparationDuration time.Duration
@@ -35,8 +35,18 @@ func (r Recipe) Validate() error {
 	if blank(r.Name) {
 		return errors.New("recipe name is required")
 	}
-	if !r.MealType.valid() {
-		return fmt.Errorf("meal type %q is invalid", r.MealType)
+	if len(r.MealTypes) == 0 {
+		return errors.New("recipe must have at least one meal type")
+	}
+	seenMealTypes := make(map[MealType]struct{}, len(r.MealTypes))
+	for index, mealType := range r.MealTypes {
+		if !mealType.valid() {
+			return fmt.Errorf("meal type at index %d is invalid: %q", index, mealType)
+		}
+		if _, duplicate := seenMealTypes[mealType]; duplicate {
+			return fmt.Errorf("meal type %q is duplicated", mealType)
+		}
+		seenMealTypes[mealType] = struct{}{}
 	}
 	if blank(r.Category) {
 		return errors.New("recipe category is required")
