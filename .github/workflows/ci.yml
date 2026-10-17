@@ -12,6 +12,22 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    env:
+      TEST_DATABASE_URL: postgres://mealprep:mealprep@localhost:5432/mealprep_test?sslmode=disable
+    services:
+      postgres:
+        image: postgres:18-alpine
+        env:
+          POSTGRES_DB: mealprep_test
+          POSTGRES_USER: mealprep
+          POSTGRES_PASSWORD: mealprep
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U mealprep -d mealprep_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 5
     steps:
       - name: Check out repository
         uses: actions/checkout@v7
@@ -30,6 +46,9 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Test PostgreSQL integration
+        run: go test -tags=integration ./internal/postgres -count=1
 
       - name: Test with race detector
         run: go test -race ./...
