@@ -23,6 +23,18 @@ type rowScanner interface {
 }
 
 func loadEntry(ctx context.Context, tx pgx.Tx, id domain.RecipeID) (recipecatalogue.CatalogueEntry, error) {
+	entry, err := loadEntryUnchecked(ctx, tx, id)
+	if err != nil {
+		return recipecatalogue.CatalogueEntry{}, err
+	}
+	if err := validateStoredEntry(entry); err != nil {
+		return recipecatalogue.CatalogueEntry{}, err
+	}
+
+	return entry, nil
+}
+
+func loadEntryUnchecked(ctx context.Context, tx pgx.Tx, id domain.RecipeID) (recipecatalogue.CatalogueEntry, error) {
 	entry, err := scanEntry(tx.QueryRow(ctx,
 		`SELECT `+recipeColumns+` FROM recipes WHERE id = $1`, string(id)))
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -36,10 +48,6 @@ func loadEntry(ctx context.Context, tx pgx.Tx, id domain.RecipeID) (recipecatalo
 	if err := loadRelations(ctx, tx, entries); err != nil {
 		return recipecatalogue.CatalogueEntry{}, err
 	}
-	if err := validateStoredEntry(entries[0]); err != nil {
-		return recipecatalogue.CatalogueEntry{}, err
-	}
-
 	return entries[0], nil
 }
 
