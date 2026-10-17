@@ -1,4 +1,4 @@
-.PHONY: build check compose-config fmt fmt-check lint migrate-down migrate-up race run test test-integration vet
+.PHONY: build check compose-config fmt fmt-check lint migrate-down migrate-up race run seed test test-integration vet
 
 build:
 	go build ./...
@@ -32,6 +32,9 @@ migrate-up:
 
 migrate-down:
 	docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"' < migrations/000001_recipe_catalogue.down.sql
+
+seed:
+	go run ./cmd/seed -dir ./seed
 
 check: fmt-check vet test race build lint compose-config
 
