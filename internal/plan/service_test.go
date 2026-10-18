@@ -3,12 +3,14 @@ package plan
 import (
 	"context"
 	"errors"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
 
 	"github.com/Suhare00/mealprep-bot/internal/domain"
 	recipecatalogue "github.com/Suhare00/mealprep-bot/internal/recipe"
+	"github.com/Suhare00/mealprep-bot/internal/seed"
 )
 
 func TestEligibilityRules(t *testing.T) {
@@ -110,6 +112,33 @@ func TestGenerationVariesWithControlledChooser(t *testing.T) {
 	}
 	if first == second {
 		t.Fatalf("controlled choices produced identical plans: %#v", first)
+	}
+}
+
+func TestCanonicalSeedVariesEveryMealSlot(t *testing.T) {
+	dataset, err := seed.Load(filepath.Join("..", "..", "seed"))
+	if err != nil {
+		t.Fatalf("load canonical seed: %v", err)
+	}
+
+	breakfasts := make(map[domain.RecipeID]struct{})
+	lunches := make(map[domain.RecipeID]struct{})
+	dinners := make(map[domain.RecipeID]struct{})
+	for choice := range variedCandidateLimit {
+		ids, selectErr := selectPlan(dataset.Entries, nil, &sequenceChooser{values: []int{choice, choice, choice}})
+		if selectErr != nil {
+			t.Fatalf("select canonical plan for choice %d: %v", choice, selectErr)
+		}
+		if ids.Breakfast == ids.Lunch || ids.Breakfast == ids.Dinner || ids.Lunch == ids.Dinner {
+			t.Fatalf("choice %d produced duplicate recipes: %#v", choice, ids)
+		}
+		breakfasts[ids.Breakfast] = struct{}{}
+		lunches[ids.Lunch] = struct{}{}
+		dinners[ids.Dinner] = struct{}{}
+	}
+
+	if len(breakfasts) < 2 || len(lunches) < 2 || len(dinners) < 2 {
+		t.Fatalf("canonical diversity breakfast=%v lunch=%v dinner=%v", breakfasts, lunches, dinners)
 	}
 }
 
