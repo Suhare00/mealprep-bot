@@ -122,16 +122,18 @@ func (b *Bot) handleMessage(ctx context.Context, message Message) error {
 }
 
 func (b *Bot) handleCallback(ctx context.Context, callback CallbackQuery) error {
-	ackErr := b.client.AnswerCallbackQuery(ctx, callback.ID)
-	if ackErr != nil {
-		ackErr = fmt.Errorf("answer callback query: %w", ackErr)
+	if err := b.client.AnswerCallbackQuery(ctx, callback.ID); err != nil {
+		if isExpiredCallbackAcknowledgement(err) {
+			b.logger.Debug("Telegram callback acknowledgement expired")
+		} else {
+			b.logger.Warn("Telegram callback acknowledgement failed; continuing update processing", "error", err)
+		}
 	}
 
-	var processErr error
 	if callback.Message != nil && callback.Message.Chat.Type == "private" {
-		processErr = b.routeCallback(ctx, callback.Data, *callback.Message)
+		return b.routeCallback(ctx, callback.Data, *callback.Message)
 	}
-	return errors.Join(processErr, ackErr)
+	return nil
 }
 
 func (b *Bot) routeCallback(ctx context.Context, data string, message Message) error {
