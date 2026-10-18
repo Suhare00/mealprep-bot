@@ -209,7 +209,7 @@ func (b *Bot) handlePlanAction(ctx context.Context, action callbackAction, messa
 			return b.edit(ctx, message, planMessage(snapshot, "План уже обновился. Показана актуальная версия.\n\n"))
 		}
 		if err == nil {
-			return b.edit(ctx, message, shoppingListMessage(snapshot, items))
+			return b.edit(ctx, message, shoppingListMessage(snapshot, items, action.page))
 		}
 	}
 	if err == nil {

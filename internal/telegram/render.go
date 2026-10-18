@@ -15,6 +15,7 @@ import (
 
 const (
 	defaultPageSize  = 9
+	shoppingPageSize = 12
 	maxCallbackBytes = 64
 	maxMessageRunes  = 1800
 )
@@ -54,25 +55,47 @@ func planMessage(snapshot mealplan.Snapshot, prefix string) OutgoingMessage {
 		buttonRow("Заменить завтрак", fmt.Sprintf("px:b:%d", revision)),
 		buttonRow("Заменить обед", fmt.Sprintf("px:l:%d", revision)),
 		buttonRow("Заменить ужин", fmt.Sprintf("px:d:%d", revision)),
-		buttonRow("Список покупок", fmt.Sprintf("ps:%d", revision)),
+		buttonRow("Список покупок", fmt.Sprintf("ps:%d:0", revision)),
 		buttonRow("Сгенерировать заново", fmt.Sprintf("pg:%d", revision)),
 		buttonRow("Главное меню", "m"),
 	)}
 }
 
-func shoppingListMessage(snapshot mealplan.Snapshot, items []mealplan.ShoppingItem) OutgoingMessage {
+func shoppingListMessage(snapshot mealplan.Snapshot, items []mealplan.ShoppingItem, requestedPage int) OutgoingMessage {
+	pageCount := max(1, (len(items)+shoppingPageSize-1)/shoppingPageSize)
+	page := min(max(requestedPage, 0), pageCount-1)
+	start := min(page*shoppingPageSize, len(items))
+	end := min(start+shoppingPageSize, len(items))
 	var text strings.Builder
-	text.WriteString("Список покупок на текущий план\n\n")
-	for _, item := range items {
-		fmt.Fprintf(&text, "• %s — %s %s\n", item.Name, formatQuantity(item.Quantity), item.Unit)
+	fmt.Fprintf(&text, "Список покупок на текущий план\nСтраница %d из %d\n\n", page+1, pageCount)
+	for _, item := range items[start:end] {
+		fmt.Fprintf(&text, "• %s — %s %s\n", shortIngredientName(item.Name), formatQuantity(item.Quantity), item.Unit)
 	}
+	rows := make([][]InlineKeyboardButton, 0, 3)
+	var navigation []InlineKeyboardButton
+	if page > 0 {
+		navigation = append(navigation, InlineKeyboardButton{Text: "← Назад", CallbackData: fmt.Sprintf("ps:%d:%d", snapshot.Revision, page-1)})
+	}
+	if page+1 < pageCount {
+		navigation = append(navigation, InlineKeyboardButton{Text: "Вперёд →", CallbackData: fmt.Sprintf("ps:%d:%d", snapshot.Revision, page+1)})
+	}
+	if len(navigation) > 0 {
+		rows = append(rows, navigation)
+	}
+	rows = append(rows, buttonRow("← Назад к плану", "p"), buttonRow("Главное меню", "m"))
 	return OutgoingMessage{
-		Text: truncateText(text.String()),
-		ReplyMarkup: keyboard(
-			buttonRow("← Назад к плану", "p"),
-			buttonRow("Главное меню", "m"),
-		),
+		Text:        truncateText(text.String()),
+		ReplyMarkup: InlineKeyboardMarkup{InlineKeyboard: rows},
 	}
+}
+
+func shortIngredientName(value string) string {
+	const maxRunes = 80
+	if utf8.RuneCountInString(value) <= maxRunes {
+		return value
+	}
+	runes := []rune(value)
+	return string(runes[:maxRunes-1]) + "…"
 }
 
 func unavailablePlanMessage(revision int64) OutgoingMessage {
@@ -339,10 +362,22 @@ func parseCallback(data string) (callbackAction, error) {
 		return callbackAction{}, errInvalidCallback
 	}
 	parts := strings.Split(data, ":")
-	if (parts[0] == "pg" || parts[0] == "ps") && len(parts) == 2 {
+	if parts[0] == "pg" && len(parts) == 2 {
 		revision, err := strconv.ParseInt(parts[1], 10, 64)
 		if err == nil && revision >= 0 {
-			return callbackAction{kind: parts[0], revision: revision}, nil
+			return callbackAction{kind: "pg", revision: revision}, nil
+		}
+		return callbackAction{}, errInvalidCallback
+	}
+	if parts[0] == "ps" && (len(parts) == 2 || len(parts) == 3) {
+		revision, revisionErr := strconv.ParseInt(parts[1], 10, 64)
+		page := 0
+		var pageErr error
+		if len(parts) == 3 {
+			page, pageErr = strconv.Atoi(parts[2])
+		}
+		if revisionErr == nil && revision > 0 && pageErr == nil && page >= 0 {
+			return callbackAction{kind: "ps", revision: revision, page: page}, nil
 		}
 		return callbackAction{}, errInvalidCallback
 	}
