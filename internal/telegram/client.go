@@ -148,6 +148,18 @@ func isPermanentPollingError(err error) bool {
 	return errors.As(err, &target) && target.method == "getUpdates" && target.code == http.StatusConflict
 }
 
+func isExpiredCallbackAcknowledgement(err error) bool {
+	var target *apiError
+	if !errors.As(err, &target) || target.method != "answerCallbackQuery" || target.code != http.StatusBadRequest {
+		return false
+	}
+
+	description := strings.ToLower(target.description)
+	return strings.Contains(description, "query is too old") ||
+		strings.Contains(description, "query id is invalid") ||
+		strings.Contains(description, "response timeout expired")
+}
+
 func call[T any](ctx context.Context, client *APIClient, method string, payload any) (T, error) {
 	var zero T
 	body, err := json.Marshal(payload)

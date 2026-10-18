@@ -101,6 +101,37 @@ func TestTelegramErrorClassification(t *testing.T) {
 	}
 }
 
+func TestExpiredCallbackAcknowledgementClassification(t *testing.T) {
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{
+			name: "expired query",
+			err:  &apiError{method: "answerCallbackQuery", code: 400, description: "Bad Request: query is too old and response timeout expired or query ID is invalid"},
+			want: true,
+		},
+		{
+			name: "wrong method",
+			err:  &apiError{method: "editMessageText", code: 400, description: "query is too old"},
+		},
+		{
+			name: "authentication failure",
+			err:  &apiError{method: "answerCallbackQuery", code: 401, description: "Unauthorized"},
+		},
+		{name: "network failure", err: errors.New("network failed")},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := isExpiredCallbackAcknowledgement(test.err); got != test.want {
+				t.Fatalf("isExpiredCallbackAcknowledgement() = %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 func TestAPIClientPollingConflictIsTypedAndSanitized(t *testing.T) {
 	const token = "123456:super-secret"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

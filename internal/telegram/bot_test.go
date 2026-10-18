@@ -1,6 +1,7 @@
 package telegram
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -153,16 +154,79 @@ func TestBotPropagatesTelegramAPIErrors(t *testing.T) {
 		}
 	})
 
-	t.Run("answer callback", func(t *testing.T) {
+	t.Run("answer callback is best effort", func(t *testing.T) {
 		client := &fakeClient{answerErr: apiErr}
 		err := newTestBot(client, &fakeCatalogue{}).HandleUpdate(t.Context(), callbackUpdate("m"))
-		if !errors.Is(err, apiErr) {
-			t.Fatalf("HandleUpdate() error = %v, want API error", err)
+		if err != nil {
+			t.Fatalf("HandleUpdate() error = %v", err)
 		}
 		if len(client.edited) != 1 {
 			t.Fatalf("callback route did not run after acknowledgement failure: %#v", client.edited)
 		}
 	})
+}
+
+func TestBotRunAdvancesPastExpiredCallbackAndProcessesNextMessage(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	client := &fakeClient{answerErr: &apiError{
+		method:      "answerCallbackQuery",
+		code:        400,
+		description: "Bad Request: query is too old and response timeout expired or query ID is invalid",
+	}}
+	client.getUpdates = func(ctx context.Context, offset int64, _ int) ([]Update, error) {
+		client.offsets = append(client.offsets, offset)
+		switch len(client.offsets) {
+		case 1:
+			update := callbackUpdate("m")
+			update.UpdateID = 7
+			return []Update{update}, nil
+		case 2:
+			return []Update{{
+				UpdateID: 8,
+				Message:  &Message{MessageID: 9, Chat: Chat{ID: 42, Type: "private"}, Text: "/start"},
+			}}, nil
+		default:
+			cancel()
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}
+	}
+
+	if err := newTestBot(client, &fakeCatalogue{}).Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(client.offsets) != 3 || client.offsets[1] != 8 || client.offsets[2] != 9 {
+		t.Fatalf("getUpdates offsets = %v, want [0 8 9]", client.offsets)
+	}
+	if len(client.edited) != 1 || len(client.sent) != 1 {
+		t.Fatalf("processed outputs: edited=%d sent=%d, want 1 and 1", len(client.edited), len(client.sent))
+	}
+	if !strings.Contains(client.sent[0].message.Text, "Добро пожаловать") {
+		t.Fatalf("next command response = %q", client.sent[0].message.Text)
+	}
+}
+
+func TestBotUnexpectedCallbackAcknowledgementFailureIsLoggedSafelyAndNonfatal(t *testing.T) {
+	const sensitiveCallbackID = "sensitive-callback-id"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	client := &fakeClient{answerErr: errors.New("temporary acknowledgement network failure")}
+	bot := NewBot(client, &fakeCatalogue{}, logger)
+	update := callbackUpdate("m")
+	update.CallbackQuery.ID = sensitiveCallbackID
+
+	if err := bot.HandleUpdate(t.Context(), update); err != nil {
+		t.Fatalf("HandleUpdate() error = %v", err)
+	}
+	if !strings.Contains(logs.String(), "acknowledgement failed") {
+		t.Fatalf("logs = %q, want operational warning", logs.String())
+	}
+	if strings.Contains(logs.String(), sensitiveCallbackID) {
+		t.Fatalf("logs leaked callback ID: %q", logs.String())
+	}
+	if len(client.edited) != 1 {
+		t.Fatalf("callback route did not run: %#v", client.edited)
+	}
 }
 
 func TestBotRecoversFromStaleCallbackMessage(t *testing.T) {
