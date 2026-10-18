@@ -370,6 +370,32 @@ func TestBotRunExecutesExpiredPlannerCallbackOnceAndContinues(t *testing.T) {
 	}
 }
 
+func TestBotRunAdvancesAfterUnexpectedAcknowledgementFailure(t *testing.T) {
+	ctx, cancel := context.WithCancel(t.Context())
+	client := &fakeClient{answerErr: errors.New("temporary acknowledgement network failure")}
+	client.getUpdates = func(ctx context.Context, offset int64, _ int) ([]Update, error) {
+		client.offsets = append(client.offsets, offset)
+		if len(client.offsets) == 1 {
+			update := callbackUpdate("m")
+			update.UpdateID = 20
+			return []Update{update}, nil
+		}
+		cancel()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	}
+
+	if err := newTestBot(client, &fakeCatalogue{}).Run(ctx); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if !reflect.DeepEqual(client.offsets, []int64{0, 21}) {
+		t.Fatalf("getUpdates offsets = %v, want [0 21]", client.offsets)
+	}
+	if len(client.edited) != 1 {
+		t.Fatalf("callback route executions = %d, want 1", len(client.edited))
+	}
+}
+
 func TestBotUnexpectedCallbackAcknowledgementFailureIsLoggedSafelyAndNonfatal(t *testing.T) {
 	const sensitiveCallbackID = "sensitive-callback-id"
 	var logs bytes.Buffer
