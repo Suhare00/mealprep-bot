@@ -9,6 +9,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/Suhare00/mealprep-bot/internal/domain"
+	mealplan "github.com/Suhare00/mealprep-bot/internal/plan"
 	recipecatalogue "github.com/Suhare00/mealprep-bot/internal/recipe"
 )
 
@@ -20,26 +21,100 @@ const (
 
 func mainMenu() OutgoingMessage {
 	return OutgoingMessage{
-		Text: "Добро пожаловать в MealPrep Bot!\n\nЗдесь можно посмотреть каталог рецептов. Планирование питания появится позже.",
+		Text: "Добро пожаловать в MealPrep Bot!\n\nЗдесь можно посмотреть каталог рецептов и составить план питания на три дня.",
 		ReplyMarkup: keyboard(
 			buttonRow("Каталог рецептов", "c:0"),
-			buttonRow("План питания (скоро)", "p"),
+			buttonRow("План питания", "p"),
 		),
 	}
 }
 
 func helpMessage() OutgoingMessage {
 	return OutgoingMessage{
-		Text:        "Доступные команды:\n/start — главное меню\n/recipes — каталог рецептов\n/help — эта справка",
+		Text:        "Доступные команды:\n/start — главное меню\n/recipes — каталог рецептов\n/plan — план питания на три дня\n/help — эта справка",
 		ReplyMarkup: keyboard(buttonRow("Главное меню", "m")),
 	}
 }
 
-func planPlaceholder() OutgoingMessage {
+func emptyPlanMessage() OutgoingMessage {
 	return OutgoingMessage{
-		Text:        "План питания пока в разработке. Сейчас доступен каталог рецептов.",
-		ReplyMarkup: keyboard(buttonRow("Каталог рецептов", "c:0"), buttonRow("Главное меню", "m")),
+		Text: "Плана пока нет. Сгенерируйте три блюда для двух человек на три дня: завтрак, обед и ужин. " +
+			"Каждое блюдо готовится один раз на 6 порций и повторяется все три дня.",
+		ReplyMarkup: keyboard(buttonRow("Сгенерировать план", "pg:0"), buttonRow("Главное меню", "m")),
 	}
+}
+
+func planMessage(snapshot mealplan.Snapshot, prefix string) OutgoingMessage {
+	text := fmt.Sprintf("%sПлан питания на 3 дня\nДля 2 человек · 18 порций\n\n"+
+		"Завтрак: %s — 6 порций\nОбед: %s — 6 порций\nУжин: %s — 6 порций\n\n"+
+		"Эти три блюда повторяются все три дня по задумке batch-cooking. Сроки хранения — данные каталога, а не персональная гарантия безопасности.",
+		prefix, snapshot.Breakfast.Recipe.Name, snapshot.Lunch.Recipe.Name, snapshot.Dinner.Recipe.Name)
+	revision := snapshot.Revision
+	return OutgoingMessage{Text: truncateText(text), ReplyMarkup: keyboard(
+		buttonRow("Заменить завтрак", fmt.Sprintf("px:b:%d", revision)),
+		buttonRow("Заменить обед", fmt.Sprintf("px:l:%d", revision)),
+		buttonRow("Заменить ужин", fmt.Sprintf("px:d:%d", revision)),
+		buttonRow("Список покупок", fmt.Sprintf("ps:%d", revision)),
+		buttonRow("Сгенерировать заново", fmt.Sprintf("pg:%d", revision)),
+		buttonRow("Главное меню", "m"),
+	)}
+}
+
+func shoppingListMessage(snapshot mealplan.Snapshot, items []mealplan.ShoppingItem) OutgoingMessage {
+	var text strings.Builder
+	text.WriteString("Список покупок на текущий план\n\n")
+	for _, item := range items {
+		fmt.Fprintf(&text, "• %s — %s %s\n", item.Name, formatQuantity(item.Quantity), item.Unit)
+	}
+	return OutgoingMessage{
+		Text: truncateText(text.String()),
+		ReplyMarkup: keyboard(
+			buttonRow("← Назад к плану", "p"),
+			buttonRow("Главное меню", "m"),
+		),
+	}
+}
+
+func unavailablePlanMessage(revision int64) OutgoingMessage {
+	return OutgoingMessage{
+		Text:        "Один из рецептов сохранённого плана больше недоступен или не подходит для трёх дней. Сгенерируйте план заново.",
+		ReplyMarkup: keyboard(buttonRow("Сгенерировать заново", fmt.Sprintf("pg:%d", revision)), buttonRow("Главное меню", "m")),
+	}
+}
+
+func insufficientPlanMessage(mealType domain.MealType) OutgoingMessage {
+	return OutgoingMessage{
+		Text:        fmt.Sprintf("Не удалось составить полный план: недостаточно подходящих рецептов для приёма пищи «%s».", mealTypeText(mealType)),
+		ReplyMarkup: keyboard(buttonRow("Главное меню", "m")),
+	}
+}
+
+func insufficientDistinctPlanMessage() OutgoingMessage {
+	return OutgoingMessage{
+		Text:        "Не удалось составить полный план из трёх разных подходящих рецептов.",
+		ReplyMarkup: keyboard(buttonRow("Главное меню", "m")),
+	}
+}
+
+func planProcessingErrorMessage() OutgoingMessage {
+	return OutgoingMessage{Text: "Не удалось обновить план. Попробуйте ещё раз позже.", ReplyMarkup: keyboard(buttonRow("План питания", "p"), buttonRow("Главное меню", "m"))}
+}
+
+func mealTypeText(value domain.MealType) string {
+	switch value {
+	case domain.MealTypeBreakfast:
+		return "завтрак"
+	case domain.MealTypeLunch:
+		return "обед"
+	case domain.MealTypeDinner:
+		return "ужин"
+	default:
+		return string(value)
+	}
+}
+
+func formatQuantity(value float64) string {
+	return strconv.FormatFloat(value, 'f', -1, 64)
 }
 
 func cataloguePage(entries []recipecatalogue.CatalogueEntry, requestedPage int) (OutgoingMessage, error) {
@@ -249,9 +324,11 @@ func yesNo(value bool) string {
 var errInvalidCallback = errors.New("invalid callback data")
 
 type callbackAction struct {
-	kind string
-	page int
-	id   domain.RecipeID
+	kind     string
+	page     int
+	id       domain.RecipeID
+	revision int64
+	mealType domain.MealType
 }
 
 func parseCallback(data string) (callbackAction, error) {
@@ -262,6 +339,22 @@ func parseCallback(data string) (callbackAction, error) {
 		return callbackAction{}, errInvalidCallback
 	}
 	parts := strings.Split(data, ":")
+	if (parts[0] == "pg" || parts[0] == "ps") && len(parts) == 2 {
+		revision, err := strconv.ParseInt(parts[1], 10, 64)
+		if err == nil && revision >= 0 {
+			return callbackAction{kind: parts[0], revision: revision}, nil
+		}
+		return callbackAction{}, errInvalidCallback
+	}
+	if parts[0] == "px" && len(parts) == 3 {
+		revision, err := strconv.ParseInt(parts[2], 10, 64)
+		mealTypes := map[string]domain.MealType{"b": domain.MealTypeBreakfast, "l": domain.MealTypeLunch, "d": domain.MealTypeDinner}
+		mealType, ok := mealTypes[parts[1]]
+		if err == nil && revision > 0 && ok {
+			return callbackAction{kind: "px", revision: revision, mealType: mealType}, nil
+		}
+		return callbackAction{}, errInvalidCallback
+	}
 	if len(parts) != 2 && len(parts) != 3 {
 		return callbackAction{}, errInvalidCallback
 	}

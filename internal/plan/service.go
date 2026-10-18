@@ -114,6 +114,7 @@ func (s *Service) loadForMutation(ctx context.Context, chatID, expectedRevision 
 }
 
 func hydrate(stored Stored, entries []recipecatalogue.CatalogueEntry) (Snapshot, error) {
+	snapshot := Snapshot{Revision: stored.Revision, CreatedAt: stored.CreatedAt, UpdatedAt: stored.UpdatedAt}
 	byID := make(map[domain.RecipeID]recipecatalogue.CatalogueEntry, len(entries))
 	for _, entry := range entries {
 		byID[entry.Recipe.ID] = entry
@@ -125,12 +126,13 @@ func hydrate(stored Stored, entries []recipecatalogue.CatalogueEntry) (Snapshot,
 		!isEligibleFor(breakfast, domain.MealTypeBreakfast) ||
 		!isEligibleFor(lunch, domain.MealTypeLunch) ||
 		!isEligibleFor(dinner, domain.MealTypeDinner) {
-		return Snapshot{}, ErrPlanUnavailable
+		return snapshot, ErrPlanUnavailable
 	}
-	return Snapshot{
+	snapshot = Snapshot{
 		Breakfast: breakfast, Lunch: lunch, Dinner: dinner,
 		Revision: stored.Revision, CreatedAt: stored.CreatedAt, UpdatedAt: stored.UpdatedAt,
-	}, nil
+	}
+	return snapshot, nil
 }
 
 func isEligibleFor(entry recipecatalogue.CatalogueEntry, mealType domain.MealType) bool {
