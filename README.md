@@ -226,6 +226,20 @@ docker compose up -d app
 
 `make migrate-plan-up` applies only `000002_meal_plans.up.sql`; it does not modify recipe or seed rows. Do not use `docker compose down -v`, `make migrate-up`, or `make seed` for this upgrade.
 
+On Windows PowerShell without Make, run the equivalent commands below from the repository root. They copy and apply only migration 2 inside the existing PostgreSQL container:
+
+```powershell
+docker compose stop app
+git pull
+docker compose up -d postgres
+docker compose cp .\migrations\000002_meal_plans.up.sql postgres:/tmp/000002_meal_plans.up.sql
+docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /tmp/000002_meal_plans.up.sql'
+docker compose build app
+docker compose up -d app
+```
+
+These commands preserve the existing PostgreSQL volume and all 90 imported recipes. Do not run `make migrate-up`, `make seed`, `docker compose down -v`, or any volume-removal/reset command during this upgrade.
+
 After restart, send `/plan`, generate a plan, open the shopping list, replace one slot, then run:
 
 ```sh
@@ -233,6 +247,15 @@ docker compose restart app
 ```
 
 Send `/plan` again and confirm that the same current plan remains. Pressing an old inline button should show the latest plan instead of applying an obsolete mutation. Logs should react immediately after restart and must not contain the bot token, complete API URL, database password or callback-query ID. Live Telegram behavior requires real credentials and is not exercised by automated tests.
+
+The same persistence check in PowerShell is:
+
+```powershell
+docker compose restart app
+docker compose ps app postgres
+```
+
+After both services report running, send `/plan` again and confirm that the plan created before the restart is unchanged.
 
 ## PostgreSQL integration tests
 
