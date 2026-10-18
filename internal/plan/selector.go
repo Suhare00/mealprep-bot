@@ -19,15 +19,10 @@ type candidate struct {
 	score int
 }
 
-type combination struct {
-	ids         IDs
-	score       int
-	recentCount int
-}
-
 func selectPlan(entries []recipecatalogue.CatalogueEntry, recent []domain.RecipeID, chooser Chooser) (IDs, error) {
+	mealTypes := []domain.MealType{domain.MealTypeBreakfast, domain.MealTypeLunch, domain.MealTypeDinner}
 	byMeal := map[domain.MealType][]candidate{}
-	for _, mealType := range []domain.MealType{domain.MealTypeBreakfast, domain.MealTypeLunch, domain.MealTypeDinner} {
+	for _, mealType := range mealTypes {
 		byMeal[mealType] = eligible(entries, mealType)
 		if len(byMeal[mealType]) == 0 {
 			return IDs{}, &EligibilityError{MealType: mealType}
@@ -38,46 +33,85 @@ func selectPlan(entries []recipecatalogue.CatalogueEntry, recent []domain.Recipe
 	for _, id := range recent {
 		recentSet[id] = struct{}{}
 	}
-	var combinations []combination
-	for _, breakfast := range byMeal[domain.MealTypeBreakfast] {
-		for _, lunch := range byMeal[domain.MealTypeLunch] {
-			if lunch.entry.Recipe.ID == breakfast.entry.Recipe.ID {
-				continue
-			}
-			for _, dinner := range byMeal[domain.MealTypeDinner] {
-				if dinner.entry.Recipe.ID == breakfast.entry.Recipe.ID || dinner.entry.Recipe.ID == lunch.entry.Recipe.ID {
-					continue
-				}
-				ids := IDs{Breakfast: breakfast.entry.Recipe.ID, Lunch: lunch.entry.Recipe.ID, Dinner: dinner.entry.Recipe.ID}
-				combinations = append(combinations, combination{
-					ids: ids, score: breakfast.score + lunch.score + dinner.score,
-					recentCount: countRecent(ids, recentSet),
-				})
-			}
+
+	selected := make(map[domain.RecipeID]struct{}, len(mealTypes))
+	minimumRecent := -1
+	for target := 0; target <= len(mealTypes); target++ {
+		if canCompletePlan(byMeal, mealTypes, 0, selected, recentSet, 0, target) {
+			minimumRecent = target
+			break
 		}
 	}
-	if len(combinations) == 0 {
+	if minimumRecent < 0 {
 		return IDs{}, ErrInsufficientRecipes
 	}
 
-	minRecent := combinations[0].recentCount
-	for _, item := range combinations[1:] {
-		minRecent = min(minRecent, item.recentCount)
-	}
-	filtered := combinations[:0]
-	for _, item := range combinations {
-		if item.recentCount == minRecent {
-			filtered = append(filtered, item)
+	var ids IDs
+	recentUsed := 0
+	for index, mealType := range mealTypes {
+		options := make([]candidate, 0, variedCandidateLimit)
+		for _, item := range byMeal[mealType] {
+			id := item.entry.Recipe.ID
+			if _, duplicate := selected[id]; duplicate {
+				continue
+			}
+			nextRecent := recentUsed
+			if _, seen := recentSet[id]; seen {
+				nextRecent++
+			}
+			selected[id] = struct{}{}
+			possible := canCompletePlan(byMeal, mealTypes, index+1, selected, recentSet, nextRecent, minimumRecent)
+			delete(selected, id)
+			if possible {
+				options = append(options, item)
+			}
+		}
+		if len(options) == 0 {
+			return IDs{}, ErrInsufficientRecipes
+		}
+		limit := min(variedCandidateLimit, len(options))
+		chosen := options[chooseIndex(chooser, limit)].entry.Recipe.ID
+		ids.Set(mealType, chosen)
+		selected[chosen] = struct{}{}
+		if _, seen := recentSet[chosen]; seen {
+			recentUsed++
 		}
 	}
-	sort.Slice(filtered, func(i, j int) bool {
-		if filtered[i].score != filtered[j].score {
-			return filtered[i].score > filtered[j].score
+	return ids, nil
+}
+
+func canCompletePlan(
+	byMeal map[domain.MealType][]candidate,
+	mealTypes []domain.MealType,
+	index int,
+	selected map[domain.RecipeID]struct{},
+	recent map[domain.RecipeID]struct{},
+	recentUsed int,
+	targetRecent int,
+) bool {
+	if recentUsed > targetRecent || recentUsed+len(mealTypes)-index < targetRecent {
+		return false
+	}
+	if index == len(mealTypes) {
+		return recentUsed == targetRecent
+	}
+	for _, item := range byMeal[mealTypes[index]] {
+		id := item.entry.Recipe.ID
+		if _, duplicate := selected[id]; duplicate {
+			continue
 		}
-		return idsKey(filtered[i].ids) < idsKey(filtered[j].ids)
-	})
-	limit := min(variedCandidateLimit, len(filtered))
-	return filtered[chooseIndex(chooser, limit)].ids, nil
+		nextRecent := recentUsed
+		if _, seen := recent[id]; seen {
+			nextRecent++
+		}
+		selected[id] = struct{}{}
+		possible := canCompletePlan(byMeal, mealTypes, index+1, selected, recent, nextRecent, targetRecent)
+		delete(selected, id)
+		if possible {
+			return true
+		}
+	}
+	return false
 }
 
 func selectReplacement(entries []recipecatalogue.CatalogueEntry, current IDs, mealType domain.MealType, recent []domain.RecipeID, chooser Chooser) (domain.RecipeID, error) {
@@ -149,20 +183,6 @@ func supports(values []domain.MealType, target domain.MealType) bool {
 		}
 	}
 	return false
-}
-
-func countRecent(ids IDs, recent map[domain.RecipeID]struct{}) int {
-	count := 0
-	for _, id := range ids.Slice() {
-		if _, ok := recent[id]; ok {
-			count++
-		}
-	}
-	return count
-}
-
-func idsKey(ids IDs) string {
-	return string(ids.Breakfast) + "\x00" + string(ids.Lunch) + "\x00" + string(ids.Dinner)
 }
 
 func chooseIndex(chooser Chooser, n int) int {
