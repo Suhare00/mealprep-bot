@@ -20,10 +20,11 @@ const (
 )
 
 var (
-	ErrNotFound        = errors.New("meal plan not found")
-	ErrStaleRevision   = errors.New("meal plan revision is stale")
-	ErrPlanUnavailable = errors.New("saved meal plan contains unavailable recipes")
-	ErrNoAlternative   = errors.New("no alternative recipe available")
+	ErrNotFound            = errors.New("meal plan not found")
+	ErrStaleRevision       = errors.New("meal plan revision is stale")
+	ErrPlanUnavailable     = errors.New("saved meal plan contains unavailable recipes")
+	ErrNoAlternative       = errors.New("no alternative recipe available")
+	ErrInsufficientRecipes = errors.New("eligible recipes cannot form three distinct meal slots")
 )
 
 // EligibilityError reports a meal slot for which no complete plan can be built.

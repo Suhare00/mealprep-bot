@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Suhare00/mealprep-bot/internal/domain"
+	mealplan "github.com/Suhare00/mealprep-bot/internal/plan"
 	recipecatalogue "github.com/Suhare00/mealprep-bot/internal/recipe"
 )
 
@@ -24,17 +25,26 @@ type Catalogue interface {
 	GetActiveByID(ctx context.Context, id domain.RecipeID) (recipecatalogue.CatalogueEntry, error)
 }
 
+// Planner is the application use case required by the Telegram adapter.
+type Planner interface {
+	Current(ctx context.Context, chatID int64) (mealplan.Snapshot, error)
+	Generate(ctx context.Context, chatID, expectedRevision int64) (mealplan.Snapshot, error)
+	Replace(ctx context.Context, chatID int64, mealType domain.MealType, expectedRevision int64) (mealplan.Snapshot, error)
+	ShoppingList(ctx context.Context, chatID int64) (mealplan.Snapshot, []mealplan.ShoppingItem, error)
+}
+
 // Bot dispatches Telegram updates to the catalogue use case.
 type Bot struct {
 	client    Client
 	catalogue Catalogue
+	planner   Planner
 	logger    *slog.Logger
 	wait      func(context.Context, time.Duration) error
 }
 
 // NewBot constructs the Telegram delivery adapter.
-func NewBot(client Client, catalogue Catalogue, logger *slog.Logger) *Bot {
-	return &Bot{client: client, catalogue: catalogue, logger: logger, wait: wait}
+func NewBot(client Client, catalogue Catalogue, planner Planner, logger *slog.Logger) *Bot {
+	return &Bot{client: client, catalogue: catalogue, planner: planner, logger: logger, wait: wait}
 }
 
 // Run verifies long-poll compatibility and consumes updates until cancellation.
@@ -106,6 +116,8 @@ func (b *Bot) handleMessage(ctx context.Context, message Message) error {
 		response = helpMessage()
 	case "/recipes":
 		response, err = b.loadCatalogue(ctx, 0)
+	case "/plan":
+		response, err = b.loadPlan(ctx, message.Chat.ID)
 	default:
 		response = OutgoingMessage{
 			Text:        "Неизвестная команда. Используйте /help или откройте главное меню.",
@@ -147,7 +159,9 @@ func (b *Bot) routeCallback(ctx context.Context, data string, message Message) e
 	case "m":
 		response = mainMenu()
 	case "p":
-		response = planPlaceholder()
+		response, err = b.loadPlan(ctx, message.Chat.ID)
+	case "pg", "px", "ps":
+		return b.handlePlanAction(ctx, action, message)
 	case "c":
 		response, err = b.loadCatalogue(ctx, action.page)
 	case "r":
@@ -164,6 +178,70 @@ func (b *Bot) routeCallback(ctx context.Context, data string, message Message) e
 		return errors.Join(err, b.edit(ctx, message, processingErrorMessage()))
 	}
 	return b.edit(ctx, message, response)
+}
+
+func (b *Bot) loadPlan(ctx context.Context, chatID int64) (OutgoingMessage, error) {
+	snapshot, err := b.planner.Current(ctx, chatID)
+	switch {
+	case err == nil:
+		return planMessage(snapshot, ""), nil
+	case errors.Is(err, mealplan.ErrNotFound):
+		return emptyPlanMessage(), nil
+	case errors.Is(err, mealplan.ErrPlanUnavailable):
+		return unavailablePlanMessage(snapshot.Revision), nil
+	default:
+		return OutgoingMessage{}, fmt.Errorf("load current meal plan: %w", err)
+	}
+}
+
+func (b *Bot) handlePlanAction(ctx context.Context, action callbackAction, message Message) error {
+	var snapshot mealplan.Snapshot
+	var items []mealplan.ShoppingItem
+	var err error
+	switch action.kind {
+	case "pg":
+		snapshot, err = b.planner.Generate(ctx, message.Chat.ID, action.revision)
+	case "px":
+		snapshot, err = b.planner.Replace(ctx, message.Chat.ID, action.mealType, action.revision)
+	case "ps":
+		snapshot, items, err = b.planner.ShoppingList(ctx, message.Chat.ID)
+		if err == nil && snapshot.Revision != action.revision {
+			return b.edit(ctx, message, planMessage(snapshot, "План уже обновился. Показана актуальная версия.\n\n"))
+		}
+		if err == nil {
+			return b.edit(ctx, message, shoppingListMessage(snapshot, items))
+		}
+	}
+	if err == nil {
+		return b.edit(ctx, message, planMessage(snapshot, ""))
+	}
+
+	switch {
+	case errors.Is(err, mealplan.ErrStaleRevision):
+		latest, loadErr := b.loadPlan(ctx, message.Chat.ID)
+		if loadErr != nil {
+			return errors.Join(err, loadErr)
+		}
+		latest.Text = "Эта кнопка относится к старой версии плана. Показан актуальный план.\n\n" + latest.Text
+		return b.edit(ctx, message, latest)
+	case errors.Is(err, mealplan.ErrNoAlternative):
+		latest, loadErr := b.loadPlan(ctx, message.Chat.ID)
+		if loadErr != nil {
+			return errors.Join(err, loadErr)
+		}
+		latest.Text = "Для этого приёма пищи сейчас нет другого подходящего рецепта.\n\n" + latest.Text
+		return b.edit(ctx, message, latest)
+	case errors.Is(err, mealplan.ErrPlanUnavailable):
+		return b.edit(ctx, message, unavailablePlanMessage(action.revision))
+	case errors.Is(err, mealplan.ErrInsufficientRecipes):
+		return b.edit(ctx, message, insufficientDistinctPlanMessage())
+	default:
+		var eligibilityErr *mealplan.EligibilityError
+		if errors.As(err, &eligibilityErr) {
+			return b.edit(ctx, message, insufficientPlanMessage(eligibilityErr.MealType))
+		}
+		return errors.Join(err, b.edit(ctx, message, planProcessingErrorMessage()))
+	}
 }
 
 func (b *Bot) loadCatalogue(ctx context.Context, page int) (OutgoingMessage, error) {

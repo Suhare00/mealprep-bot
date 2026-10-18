@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Suhare00/mealprep-bot/internal/config"
+	mealplan "github.com/Suhare00/mealprep-bot/internal/plan"
 	"github.com/Suhare00/mealprep-bot/internal/postgres"
 	recipecatalogue "github.com/Suhare00/mealprep-bot/internal/recipe"
 	"github.com/Suhare00/mealprep-bot/internal/telegram"
@@ -70,9 +71,14 @@ func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
 		}
 		return errors.New("verify recipe catalogue schema: query failed")
 	}
+	planRepository := postgres.NewMealPlanRepository(pool)
+	if _, err := planRepository.Load(startupCtx, -1); err != nil && !errors.Is(err, mealplan.ErrNotFound) {
+		return errors.New("verify meal plan schema: query failed")
+	}
 	cancel()
+	planner := mealplan.NewService(catalogue, planRepository, nil, time.Now)
 	client := telegram.NewAPIClient(cfg.TelegramBotToken, &http.Client{Timeout: httpTimeout})
-	bot := telegram.NewBot(client, catalogue, logger)
+	bot := telegram.NewBot(client, catalogue, planner, logger)
 
 	logger.Info("Telegram long polling started")
 	return bot.Run(ctx)

@@ -1,7 +1,6 @@
 package plan
 
 import (
-	"errors"
 	"math/rand/v2"
 	"sort"
 
@@ -58,7 +57,7 @@ func selectPlan(entries []recipecatalogue.CatalogueEntry, recent []domain.Recipe
 		}
 	}
 	if len(combinations) == 0 {
-		return IDs{}, errors.New("eligible recipes cannot form three distinct meal slots")
+		return IDs{}, ErrInsufficientRecipes
 	}
 
 	minRecent := combinations[0].recentCount
