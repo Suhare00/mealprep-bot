@@ -4,6 +4,7 @@ package postgres
 
 import (
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -88,6 +89,22 @@ func TestMealPlanRepositoryPersistenceIsolationRevisionAndRollback(t *testing.T)
 	afterRollback, err := restarted.Load(t.Context(), 100)
 	if err != nil || afterRollback.Revision != 2 || afterRollback.IDs != secondIDs {
 		t.Fatalf("state after rollback = %#v, %v", afterRollback, err)
+	}
+	currentRevision := afterRollback.Revision
+	for i := 0; i < 4; i++ {
+		ids := firstIDs
+		if i%2 == 0 {
+			ids = secondIDs
+		}
+		saved, saveErr := restarted.Save(t.Context(), 100, currentRevision, ids, at.Add(time.Duration(3+i)*time.Minute))
+		if saveErr != nil {
+			t.Fatalf("Save(history %d) error = %v", i, saveErr)
+		}
+		currentRevision = saved.Revision
+	}
+	withHistory, err := restarted.Load(t.Context(), 100)
+	if err != nil || len(withHistory.Recent) != plan.RecentLimit {
+		t.Fatalf("bounded recent history = %d entries, %v", len(withHistory.Recent), err)
 	}
 
 	other, err := restarted.Save(t.Context(), 200, 0, firstIDs, at)
@@ -175,7 +192,17 @@ func TestMealPlanServiceUsesCanonicalSeedAndSurvivesRestart(t *testing.T) {
 	if err != nil || len(itemsAfter) == 0 {
 		t.Fatalf("ShoppingList(after replacement) = %#v, %v", itemsAfter, err)
 	}
-	if err := recipeRepository.Disable(t.Context(), replaced.Lunch.Recipe.ID); err != nil {
+	if reflect.DeepEqual(itemsBefore, itemsAfter) {
+		t.Fatal("shopping list did not change after replacing a recipe")
+	}
+	regenerated, err := restartedService.Generate(t.Context(), 42, replaced.Revision)
+	if err != nil {
+		t.Fatalf("Generate(regenerate) error = %v", err)
+	}
+	if regenerated.IDs() == replaced.IDs() {
+		t.Fatalf("regeneration reused the complete recent plan: %#v", regenerated.IDs())
+	}
+	if err := recipeRepository.Disable(t.Context(), regenerated.Lunch.Recipe.ID); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := restartedService.Current(t.Context(), 42); !errors.Is(err, plan.ErrPlanUnavailable) {
