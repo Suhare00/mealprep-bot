@@ -45,6 +45,7 @@ func TestMealPlanMigrationsApplyAndReverseWithoutDroppingCatalogue(t *testing.T)
 
 func TestMealPlanRepositoryPersistenceIsolationRevisionAndRollback(t *testing.T) {
 	pool, recipeRepository, repository := newPlanTestRepository(t)
+	defer applyMigration(t, pool, "000002_meal_plans.down.sql")
 	for _, entry := range []recipecatalogue.CatalogueEntry{
 		testPlanEntry("B1", domain.MealTypeBreakfast),
 		testPlanEntry("B2", domain.MealTypeBreakfast),
@@ -114,7 +115,8 @@ func TestMealPlanRepositoryPersistenceIsolationRevisionAndRollback(t *testing.T)
 }
 
 func TestMealPlanRepositoryConcurrentRevisionAllowsOneMutation(t *testing.T) {
-	_, recipeRepository, repository := newPlanTestRepository(t)
+	pool, recipeRepository, repository := newPlanTestRepository(t)
+	defer applyMigration(t, pool, "000002_meal_plans.down.sql")
 	for _, entry := range []recipecatalogue.CatalogueEntry{
 		testPlanEntry("B1", domain.MealTypeBreakfast), testPlanEntry("B2", domain.MealTypeBreakfast),
 		testPlanEntry("L1", domain.MealTypeLunch), testPlanEntry("D1", domain.MealTypeDinner),
@@ -158,6 +160,7 @@ func TestMealPlanRepositoryConcurrentRevisionAllowsOneMutation(t *testing.T) {
 
 func TestMealPlanServiceUsesCanonicalSeedAndSurvivesRestart(t *testing.T) {
 	pool, recipeRepository, planRepository := newPlanTestRepository(t)
+	defer applyMigration(t, pool, "000002_meal_plans.down.sql")
 	if _, err := NewSeedImporter(pool).Import(t.Context(), loadCanonicalDataset(t)); err != nil {
 		t.Fatalf("import canonical seed: %v", err)
 	}
@@ -216,7 +219,6 @@ func newPlanTestRepository(t *testing.T) (*pgxpool.Pool, *RecipeRepository, *Mea
 	resetPlanSchema(t, pool)
 	applyMigration(t, pool, "000001_recipe_catalogue.up.sql")
 	applyMigration(t, pool, "000002_meal_plans.up.sql")
-	t.Cleanup(func() { applyMigration(t, pool, "000002_meal_plans.down.sql") })
 	return pool, NewRecipeRepository(pool), NewMealPlanRepository(pool)
 }
 
