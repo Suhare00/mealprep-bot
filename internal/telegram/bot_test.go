@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"reflect"
@@ -117,6 +118,26 @@ func TestBotShoppingListAndStalePlanCallbacks(t *testing.T) {
 			if !strings.Contains(text, want) {
 				t.Fatalf("shopping text = %q, want %q", text, want)
 			}
+		}
+	})
+
+	t.Run("shopping list pagination", func(t *testing.T) {
+		client := &fakeClient{}
+		items := make([]mealplan.ShoppingItem, 25)
+		for i := range items {
+			items[i] = mealplan.ShoppingItem{IngredientID: domain.IngredientID(fmt.Sprintf("I%02d", i)), Name: fmt.Sprintf("Ингредиент %02d", i), Quantity: float64(i + 1), Unit: "шт"}
+		}
+		planner := &fakePlanner{snapshot: telegramPlanSnapshot(4), items: items}
+		bot := NewBot(client, &fakeCatalogue{}, planner, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err := bot.HandleUpdate(t.Context(), callbackUpdate("ps:4:1")); err != nil {
+			t.Fatal(err)
+		}
+		message := client.edited[0].message
+		if !strings.Contains(message.Text, "Страница 2 из 3") || !strings.Contains(message.Text, "Ингредиент 12") || strings.Contains(message.Text, "Ингредиент 24") {
+			t.Fatalf("shopping page text = %q", message.Text)
+		}
+		if len(message.ReplyMarkup.InlineKeyboard) < 3 {
+			t.Fatalf("shopping page keyboard = %#v", message.ReplyMarkup)
 		}
 	})
 
