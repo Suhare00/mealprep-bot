@@ -112,7 +112,7 @@ Individual targets are available for `fmt`, `fmt-check`, `vet`, `test`, `build`,
 
 Recipe catalogue migrations are explicit SQL files under `migrations/`. Durations are stored as whole seconds in `BIGINT` columns and ingredient quantities use PostgreSQL `NUMERIC`.
 
-Start PostgreSQL and apply the current migration:
+For a fresh database, start PostgreSQL and apply both migrations once, in order:
 
 ```sh
 docker compose up -d postgres
@@ -120,15 +120,17 @@ make migrate-up
 make seed
 ```
 
+`make migrate-up` is for a clean database: it applies the recipe catalogue schema and then the meal-plan schema. Do not run it against a volume where migration 1 is already installed. The safe upgrade command for that case is documented below.
+
 `make seed` reads `DATABASE_URL` from the environment. When using the values from `.env`, export them into the current shell before running host-side Go commands. The seed CLI can also read another directory with `go run ./cmd/seed -dir /path/to/seed`.
 
-Reverse it in dependency-safe order with:
+Reverse both migrations in dependency-safe order with:
 
 ```sh
 make migrate-down
 ```
 
-The migration targets run `psql` inside the Compose PostgreSQL container and use its configured `POSTGRES_USER` and `POSTGRES_DB` values.
+The migration targets run `psql` inside the Compose PostgreSQL container and use its configured `POSTGRES_USER` and `POSTGRES_DB` values. `make migrate-plan-up` and `make migrate-plan-down` apply only migration 2.
 
 ## Canonical recipe seed
 
@@ -156,7 +158,7 @@ The canonical PostgreSQL import, idempotency, conflict, preservation and rollbac
 make test-integration
 ```
 
-## Telegram catalogue
+## Telegram catalogue and meal planner
 
 The Telegram MVP is read-only and supports private chats. It displays active recipes from PostgreSQL; it does not contain hardcoded recipe samples. Create a bot with [BotFather](https://t.me/BotFather), copy the token, and put it in your uncommitted `.env` as `TELEGRAM_BOT_TOKEN`. Never commit the real token.
 
@@ -189,11 +191,48 @@ For a clean local setup:
 
    Alternatively, export all application variables from `.env` into the host shell and run `go run ./cmd/bot`.
 
-6. Open the bot in Telegram, send `/start`, and choose **Каталог рецептов**. `/recipes` opens the catalogue directly and `/help` shows the command list.
+6. Open the bot in Telegram and verify:
+
+   - `/start` opens the main menu;
+   - `/recipes` opens the existing catalogue;
+   - `/plan` opens the three-day planner;
+   - **Сгенерировать план** creates breakfast, lunch and dinner;
+   - **Список покупок** uses the ingredients of those three recipes;
+   - replacing one meal leaves the other two unchanged;
+   - **Сгенерировать заново** replaces the complete plan.
+
+The fixed MVP scenario is two people for three days. It selects three distinct six-serving recipes—one breakfast, one lunch and one dinner—so the three cooked batches provide 18 person-meal portions. The same dishes repeat over all three days by design. Eligible recipes must be active, support the relevant meal type and have at least three storage days. Recipes with a yield other than six servings are deliberately excluded until proportional batch scaling is introduced.
+
+Shopping quantities come from the stored recipe relations. Quantities are combined only when both the canonical ingredient ID and unit are identical; unlike units are shown separately. Storage labels are curated catalogue data, not personalized food-safety guarantees.
 
 The bot uses Telegram `getUpdates` long polling. A webhook and long polling cannot be active at the same time; startup fails with a clear error when a webhook URL is configured. Run only one polling process for a bot token. Polling uses a bounded retry delay for transient failures and stops on context cancellation. Successfully processed update offsets are sent with the next polling request, providing best-effort at-least-once handling across process restarts.
 
-The meal-planning button is an explicit placeholder. Meal plans, shopping lists, recipe editing, user history and ratings are not part of this MVP.
+Callback acknowledgements are best effort. Telegram's expired/invalid callback-query response and unexpected acknowledgement transport failures are logged without callback IDs or credentials, but do not block the update offset or restart the process. Actual plan mutations and message delivery failures are still reported. Mutation callbacks carry the plan revision, and PostgreSQL compare-and-swap protection prevents old or replayed buttons from applying the same change twice.
+
+Current plans and a small recent-selection window are stored per private chat in PostgreSQL, so plans survive a normal app/container restart. Recent recipes are avoided when alternatives exist. No preference profiles, allergy logic, nutrition, prices, cooking instructions, ratings, webhooks or group-chat planning are implemented.
+
+## Safe upgrade from the 90-recipe database
+
+If the existing Compose volume already contains migration 1 and the canonical 90 recipes, keep that volume and do not reseed or delete it:
+
+```sh
+docker compose stop app
+git pull
+docker compose up -d postgres
+make migrate-plan-up
+docker compose build app
+docker compose up -d app
+```
+
+`make migrate-plan-up` applies only `000002_meal_plans.up.sql`; it does not modify recipe or seed rows. Do not use `docker compose down -v`, `make migrate-up`, or `make seed` for this upgrade.
+
+After restart, send `/plan`, generate a plan, open the shopping list, replace one slot, then run:
+
+```sh
+docker compose restart app
+```
+
+Send `/plan` again and confirm that the same current plan remains. Pressing an old inline button should show the latest plan instead of applying an obsolete mutation. Logs should react immediately after restart and must not contain the bot token, complete API URL, database password or callback-query ID. Live Telegram behavior requires real credentials and is not exercised by automated tests.
 
 ## PostgreSQL integration tests
 
@@ -219,7 +258,7 @@ $env:TEST_DATABASE_URL = 'postgres://mealprep:your-local-password@localhost:5432
 make test-integration
 ```
 
-The integration suite drops and recreates the recipe catalogue tables, so never point `TEST_DATABASE_URL` at production or a database containing data you need.
+The integration suite drops and recreates the recipe and meal-plan tables, so never point `TEST_DATABASE_URL` at production or a database containing data you need.
 
 ## Development approach
 
