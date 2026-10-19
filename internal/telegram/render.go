@@ -55,37 +55,105 @@ func planMessage(snapshot mealplan.Snapshot, prefix string) OutgoingMessage {
 		buttonRow("Заменить завтрак", fmt.Sprintf("px:b:%d", revision)),
 		buttonRow("Заменить обед", fmt.Sprintf("px:l:%d", revision)),
 		buttonRow("Заменить ужин", fmt.Sprintf("px:d:%d", revision)),
-		buttonRow("Список покупок", fmt.Sprintf("ps:%d:0", revision)),
+		buttonRow("Список покупок", fmt.Sprintf("sm:%d", revision)),
 		buttonRow("Сгенерировать заново", fmt.Sprintf("pg:%d", revision)),
 		buttonRow("Главное меню", "m"),
 	)}
 }
 
-func shoppingListMessage(snapshot mealplan.Snapshot, items []mealplan.ShoppingItem, requestedPage int) OutgoingMessage {
+func shoppingMenuMessage(snapshot mealplan.Snapshot) OutgoingMessage {
+	revision := snapshot.Revision
+	return OutgoingMessage{
+		Text: truncateText(fmt.Sprintf("Список покупок\n\n"+
+			"Общий список объединяет одинаковые ингредиенты всего плана.\n\n"+
+			"По блюдам:\n• Завтрак — %s\n• Обед — %s\n• Ужин — %s",
+			snapshot.Breakfast.Recipe.Name, snapshot.Lunch.Recipe.Name, snapshot.Dinner.Recipe.Name)),
+		ReplyMarkup: keyboard(
+			buttonRow("Общий список", fmt.Sprintf("sc:%d:0", revision)),
+			buttonRow("Завтрак", fmt.Sprintf("sr:b:%d:0", revision)),
+			buttonRow("Обед", fmt.Sprintf("sr:l:%d:0", revision)),
+			buttonRow("Ужин", fmt.Sprintf("sr:d:%d:0", revision)),
+			buttonRow("← Назад к плану", "p"),
+			buttonRow("Главное меню", "m"),
+		),
+	}
+}
+
+func consolidatedShoppingListMessage(snapshot mealplan.Snapshot, items []mealplan.ShoppingItem, requestedPage int) OutgoingMessage {
+	return shoppingListPage(
+		"Общий список покупок",
+		items,
+		requestedPage,
+		func(page int) string { return fmt.Sprintf("sc:%d:%d", snapshot.Revision, page) },
+		fmt.Sprintf("sm:%d", snapshot.Revision),
+	)
+}
+
+func recipeShoppingListMessage(snapshot mealplan.Snapshot, mealType domain.MealType, items []mealplan.ShoppingItem, requestedPage int) OutgoingMessage {
+	entry := snapshot.Entry(mealType)
+	title := fmt.Sprintf("%s: %s\n%d порций", mealTypeTitle(mealType), entry.Recipe.Name, entry.Recipe.Servings)
+	return shoppingListPage(
+		title,
+		items,
+		requestedPage,
+		func(page int) string {
+			return fmt.Sprintf("sr:%s:%d:%d", mealTypeCode(mealType), snapshot.Revision, page)
+		},
+		fmt.Sprintf("sm:%d", snapshot.Revision),
+	)
+}
+
+func shoppingListPage(title string, items []mealplan.ShoppingItem, requestedPage int, pageCallback func(int) string, backCallback string) OutgoingMessage {
 	pageCount := max(1, (len(items)+shoppingPageSize-1)/shoppingPageSize)
 	page := min(max(requestedPage, 0), pageCount-1)
 	start := min(page*shoppingPageSize, len(items))
 	end := min(start+shoppingPageSize, len(items))
 	var text strings.Builder
-	fmt.Fprintf(&text, "Список покупок на текущий план\nСтраница %d из %d\n\n", page+1, pageCount)
+	fmt.Fprintf(&text, "%s\nСтраница %d из %d\n\n", title, page+1, pageCount)
 	for _, item := range items[start:end] {
 		fmt.Fprintf(&text, "• %s — %s %s\n", shortIngredientName(item.Name), formatQuantity(item.Quantity), item.Unit)
 	}
 	rows := make([][]InlineKeyboardButton, 0, 3)
 	var navigation []InlineKeyboardButton
 	if page > 0 {
-		navigation = append(navigation, InlineKeyboardButton{Text: "← Назад", CallbackData: fmt.Sprintf("ps:%d:%d", snapshot.Revision, page-1)})
+		navigation = append(navigation, InlineKeyboardButton{Text: "← Назад", CallbackData: pageCallback(page - 1)})
 	}
 	if page+1 < pageCount {
-		navigation = append(navigation, InlineKeyboardButton{Text: "Вперёд →", CallbackData: fmt.Sprintf("ps:%d:%d", snapshot.Revision, page+1)})
+		navigation = append(navigation, InlineKeyboardButton{Text: "Вперёд →", CallbackData: pageCallback(page + 1)})
 	}
 	if len(navigation) > 0 {
 		rows = append(rows, navigation)
 	}
-	rows = append(rows, buttonRow("← Назад к плану", "p"), buttonRow("Главное меню", "m"))
+	rows = append(rows, buttonRow("← К спискам", backCallback), buttonRow("← Назад к плану", "p"), buttonRow("Главное меню", "m"))
 	return OutgoingMessage{
 		Text:        truncateText(text.String()),
 		ReplyMarkup: InlineKeyboardMarkup{InlineKeyboard: rows},
+	}
+}
+
+func mealTypeTitle(value domain.MealType) string {
+	switch value {
+	case domain.MealTypeBreakfast:
+		return "Завтрак"
+	case domain.MealTypeLunch:
+		return "Обед"
+	case domain.MealTypeDinner:
+		return "Ужин"
+	default:
+		return string(value)
+	}
+}
+
+func mealTypeCode(value domain.MealType) string {
+	switch value {
+	case domain.MealTypeBreakfast:
+		return "b"
+	case domain.MealTypeLunch:
+		return "l"
+	case domain.MealTypeDinner:
+		return "d"
+	default:
+		return ""
 	}
 }
 
@@ -369,7 +437,14 @@ func parseCallback(data string) (callbackAction, error) {
 		}
 		return callbackAction{}, errInvalidCallback
 	}
-	if parts[0] == "ps" && (len(parts) == 2 || len(parts) == 3) {
+	if parts[0] == "sm" && len(parts) == 2 {
+		revision, err := strconv.ParseInt(parts[1], 10, 64)
+		if err == nil && revision > 0 {
+			return callbackAction{kind: "sm", revision: revision}, nil
+		}
+		return callbackAction{}, errInvalidCallback
+	}
+	if (parts[0] == "sc" || parts[0] == "ps") && (len(parts) == 2 || len(parts) == 3) {
 		revision, revisionErr := strconv.ParseInt(parts[1], 10, 64)
 		page := 0
 		var pageErr error
@@ -377,7 +452,17 @@ func parseCallback(data string) (callbackAction, error) {
 			page, pageErr = strconv.Atoi(parts[2])
 		}
 		if revisionErr == nil && revision > 0 && pageErr == nil && page >= 0 {
-			return callbackAction{kind: "ps", revision: revision, page: page}, nil
+			return callbackAction{kind: "sc", revision: revision, page: page}, nil
+		}
+		return callbackAction{}, errInvalidCallback
+	}
+	if parts[0] == "sr" && len(parts) == 4 {
+		mealTypes := map[string]domain.MealType{"b": domain.MealTypeBreakfast, "l": domain.MealTypeLunch, "d": domain.MealTypeDinner}
+		mealType, mealOK := mealTypes[parts[1]]
+		revision, revisionErr := strconv.ParseInt(parts[2], 10, 64)
+		page, pageErr := strconv.Atoi(parts[3])
+		if mealOK && revisionErr == nil && revision > 0 && pageErr == nil && page >= 0 {
+			return callbackAction{kind: "sr", revision: revision, mealType: mealType, page: page}, nil
 		}
 		return callbackAction{}, errInvalidCallback
 	}
