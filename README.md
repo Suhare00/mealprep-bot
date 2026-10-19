@@ -197,13 +197,16 @@ For a clean local setup:
    - `/recipes` opens the existing catalogue;
    - `/plan` opens the three-day planner;
    - **Сгенерировать план** creates breakfast, lunch and dinner;
-   - **Список покупок** uses the ingredients of those three recipes;
+   - **Список покупок** opens a choice between one consolidated list and separate breakfast, lunch and dinner lists;
+   - the consolidated view combines matching ingredient IDs and units across all three recipes;
+   - each per-dish view shows the actual recipe name, its six-serving yield and its original ingredient quantities;
    - replacing one meal leaves the other two unchanged;
+   - after replacement, both shopping-list modes update for the new plan revision while the other two dish lists stay unchanged;
    - **Сгенерировать заново** replaces the complete plan.
 
 The fixed MVP scenario is two people for three days. It selects three distinct six-serving recipes—one breakfast, one lunch and one dinner—so the three cooked batches provide 18 person-meal portions. The same dishes repeat over all three days by design. Eligible recipes must be active, support the relevant meal type and have at least three storage days. Recipes with a yield other than six servings are deliberately excluded until proportional batch scaling is introduced.
 
-Shopping quantities come from the stored recipe relations. Quantities are combined only when both the canonical ingredient ID and unit are identical; unlike units are shown separately. Storage labels are curated catalogue data, not personalized food-safety guarantees.
+Shopping quantities come from the stored recipe relations. The consolidated view combines quantities only when both the canonical ingredient ID and unit are identical; unlike units are shown separately. Per-dish views preserve each recipe's own quantities. Shopping lists are derived from the current saved plan and are not persisted separately. Storage labels are curated catalogue data, not personalized food-safety guarantees.
 
 The bot uses Telegram `getUpdates` long polling. A webhook and long polling cannot be active at the same time; startup fails with a clear error when a webhook URL is configured. Run only one polling process for a bot token. Polling uses a bounded retry delay for transient failures and stops on context cancellation. Successfully processed update offsets are sent with the next polling request, providing best-effort at-least-once handling across process restarts.
 
