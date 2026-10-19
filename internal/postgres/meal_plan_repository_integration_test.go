@@ -20,6 +20,7 @@ func TestMealPlanMigrationsApplyAndReverseWithoutDroppingCatalogue(t *testing.T)
 	pool := openTestPool(t)
 	resetPlanSchema(t, pool)
 	applyMigration(t, pool, "000001_recipe_catalogue.up.sql")
+	applyMigration(t, pool, "000003_recipe_steps_media.up.sql")
 	applyMigration(t, pool, "000002_meal_plans.up.sql")
 
 	for _, table := range []string{"meal_plans", "meal_plan_recent_selections"} {
@@ -33,6 +34,7 @@ func TestMealPlanMigrationsApplyAndReverseWithoutDroppingCatalogue(t *testing.T)
 	}
 
 	applyMigration(t, pool, "000002_meal_plans.down.sql")
+	applyMigration(t, pool, "000003_recipe_steps_media.down.sql")
 	var recipesExist bool
 	if err := pool.QueryRow(t.Context(), `SELECT to_regclass('public.recipes') IS NOT NULL`).Scan(&recipesExist); err != nil {
 		t.Fatal(err)
@@ -218,6 +220,7 @@ func newPlanTestRepository(t *testing.T) (*pgxpool.Pool, *RecipeRepository, *Mea
 	pool := openTestPool(t)
 	resetPlanSchema(t, pool)
 	applyMigration(t, pool, "000001_recipe_catalogue.up.sql")
+	applyMigration(t, pool, "000003_recipe_steps_media.up.sql")
 	applyMigration(t, pool, "000002_meal_plans.up.sql")
 	return pool, NewRecipeRepository(pool), NewMealPlanRepository(pool)
 }
@@ -225,6 +228,7 @@ func newPlanTestRepository(t *testing.T) (*pgxpool.Pool, *RecipeRepository, *Mea
 func resetPlanSchema(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	applyMigration(t, pool, "000002_meal_plans.down.sql")
+	applyMigration(t, pool, "000003_recipe_steps_media.down.sql")
 	applyMigration(t, pool, "000001_recipe_catalogue.down.sql")
 }
 

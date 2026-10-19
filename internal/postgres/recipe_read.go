@@ -207,6 +207,115 @@ func loadRelations(ctx context.Context, tx pgx.Tx, entries []recipecatalogue.Cat
 	}
 	ingredientRows.Close()
 
+	mediaRows, err := tx.Query(ctx, `
+		SELECT recipe_id, id, storage_key, mime_type, width, height,
+			COALESCE(alt_text, ''), COALESCE(caption, '')
+		FROM recipe_media
+		WHERE recipe_id = ANY($1::text[])
+		ORDER BY recipe_id, id`, ids)
+	if err != nil {
+		return fmt.Errorf("select recipe media: %w", err)
+	}
+	for mediaRows.Next() {
+		var recipeID, mediaID, storageKey, mimeType, altText, caption string
+		var width, height int
+		if err := mediaRows.Scan(&recipeID, &mediaID, &storageKey, &mimeType, &width, &height, &altText, &caption); err != nil {
+			mediaRows.Close()
+			return fmt.Errorf("scan recipe media: %w", err)
+		}
+		index := entryIndexes[domain.RecipeID(recipeID)]
+		entries[index].Recipe.Media = append(entries[index].Recipe.Media, domain.RecipeMedia{
+			ID: domain.MediaID(mediaID), StorageKey: domain.StorageKey(storageKey),
+			MIMEType: domain.MediaType(mimeType), Width: width, Height: height,
+			AltText: altText, Caption: caption,
+		})
+	}
+	if err := mediaRows.Err(); err != nil {
+		mediaRows.Close()
+		return fmt.Errorf("iterate recipe media: %w", err)
+	}
+	mediaRows.Close()
+
+	coverRows, err := tx.Query(ctx, `
+		SELECT recipe_id, media_id
+		FROM recipe_cover_images
+		WHERE recipe_id = ANY($1::text[])
+		ORDER BY recipe_id`, ids)
+	if err != nil {
+		return fmt.Errorf("select cover images: %w", err)
+	}
+	for coverRows.Next() {
+		var recipeID, mediaID string
+		if err := coverRows.Scan(&recipeID, &mediaID); err != nil {
+			coverRows.Close()
+			return fmt.Errorf("scan cover image: %w", err)
+		}
+		index := entryIndexes[domain.RecipeID(recipeID)]
+		id := domain.MediaID(mediaID)
+		entries[index].Recipe.CoverImageID = &id
+	}
+	if err := coverRows.Err(); err != nil {
+		coverRows.Close()
+		return fmt.Errorf("iterate cover images: %w", err)
+	}
+	coverRows.Close()
+
+	imageRows, err := tx.Query(ctx, `
+		SELECT recipe_id, media_id, position
+		FROM recipe_images
+		WHERE recipe_id = ANY($1::text[])
+		ORDER BY recipe_id, position`, ids)
+	if err != nil {
+		return fmt.Errorf("select additional images: %w", err)
+	}
+	for imageRows.Next() {
+		var recipeID, mediaID string
+		var position int
+		if err := imageRows.Scan(&recipeID, &mediaID, &position); err != nil {
+			imageRows.Close()
+			return fmt.Errorf("scan additional image: %w", err)
+		}
+		index := entryIndexes[domain.RecipeID(recipeID)]
+		entries[index].Recipe.Images = append(entries[index].Recipe.Images, domain.RecipeImage{
+			MediaID: domain.MediaID(mediaID), Position: position,
+		})
+	}
+	if err := imageRows.Err(); err != nil {
+		imageRows.Close()
+		return fmt.Errorf("iterate additional images: %w", err)
+	}
+	imageRows.Close()
+
+	stepRows, err := tx.Query(ctx, `
+		SELECT recipe_id, id, position, text, image_media_id
+		FROM recipe_steps
+		WHERE recipe_id = ANY($1::text[])
+		ORDER BY recipe_id, position`, ids)
+	if err != nil {
+		return fmt.Errorf("select recipe steps: %w", err)
+	}
+	for stepRows.Next() {
+		var recipeID, stepID, text string
+		var position int
+		var imageID *string
+		if err := stepRows.Scan(&recipeID, &stepID, &position, &text, &imageID); err != nil {
+			stepRows.Close()
+			return fmt.Errorf("scan recipe step: %w", err)
+		}
+		step := domain.RecipeStep{ID: domain.RecipeStepID(stepID), Position: position, Text: text}
+		if imageID != nil {
+			id := domain.MediaID(*imageID)
+			step.ImageID = &id
+		}
+		index := entryIndexes[domain.RecipeID(recipeID)]
+		entries[index].Recipe.Steps = append(entries[index].Recipe.Steps, step)
+	}
+	if err := stepRows.Err(); err != nil {
+		stepRows.Close()
+		return fmt.Errorf("iterate recipe steps: %w", err)
+	}
+	stepRows.Close()
+
 	return nil
 }
 

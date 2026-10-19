@@ -108,6 +108,38 @@ func TestSeedImporterPreservesUnrelatedCatalogueData(t *testing.T) {
 	assertEntriesEqual(t, got, unrelated)
 }
 
+func TestSeedImporterPreservesCanonicalRecipeEnrichment(t *testing.T) {
+	pool, repository := newTestRepository(t)
+	dataset := loadCanonicalDataset(t)
+	importer := NewSeedImporter(pool)
+	if _, err := importer.Import(t.Context(), dataset); err != nil {
+		t.Fatalf("first Import() error = %v", err)
+	}
+
+	enriched, err := repository.GetByID(t.Context(), "R001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enrichEntry(&enriched)
+	if err := repository.Update(t.Context(), enriched); err != nil {
+		t.Fatalf("enrich canonical recipe: %v", err)
+	}
+
+	result, err := importer.Import(t.Context(), dataset)
+	if err != nil {
+		t.Fatalf("repeat Import() error = %v", err)
+	}
+	if result.ExistingRecipes != 90 || result.InsertedRecipes != 0 {
+		t.Fatalf("repeat Import() result = %+v", result)
+	}
+	got, err := repository.GetByID(t.Context(), "R001")
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertEntriesEqual(t, got, enriched)
+	assertSeedCounts(t, pool, 90, 84, 466, 155, 233)
+}
+
 func TestSeedWorkflowRejectsMalformedInputBeforeDatabaseMutation(t *testing.T) {
 	pool, _ := newTestRepository(t)
 	directory := writeMalformedSeedFixture(t)

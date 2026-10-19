@@ -22,7 +22,12 @@ func TestRunSeedsCanonicalDatasetAndIsIdempotent(t *testing.T) {
 	}
 	t.Cleanup(pool.Close)
 
-	for _, name := range []string{"000001_recipe_catalogue.down.sql", "000001_recipe_catalogue.up.sql"} {
+	for _, name := range []string{
+		"000003_recipe_steps_media.down.sql",
+		"000001_recipe_catalogue.down.sql",
+		"000001_recipe_catalogue.up.sql",
+		"000003_recipe_steps_media.up.sql",
+	} {
 		contents, err := os.ReadFile(filepath.Join("..", "..", "migrations", name))
 		if err != nil {
 			t.Fatalf("read migration %s: %v", name, err)

@@ -27,11 +27,14 @@ const testDatabaseURLEnv = "TEST_DATABASE_URL"
 
 func TestMigrationsApplyAndReverse(t *testing.T) {
 	pool := openTestPool(t)
+	applyMigration(t, pool, "000003_recipe_steps_media.down.sql")
 	applyMigration(t, pool, "000001_recipe_catalogue.down.sql")
 	applyMigration(t, pool, "000001_recipe_catalogue.up.sql")
+	applyMigration(t, pool, "000003_recipe_steps_media.up.sql")
 
 	for _, table := range []string{
 		"recipes", "ingredients", "recipe_meal_types", "recipe_tags", "recipe_ingredients",
+		"recipe_media", "recipe_cover_images", "recipe_images", "recipe_steps",
 	} {
 		var exists bool
 		if err := pool.QueryRow(t.Context(),
@@ -44,6 +47,7 @@ func TestMigrationsApplyAndReverse(t *testing.T) {
 		}
 	}
 
+	applyMigration(t, pool, "000003_recipe_steps_media.down.sql")
 	applyMigration(t, pool, "000001_recipe_catalogue.down.sql")
 	var exists bool
 	if err := pool.QueryRow(t.Context(), `SELECT to_regclass('public.recipes') IS NOT NULL`).Scan(&exists); err != nil {
@@ -54,9 +58,44 @@ func TestMigrationsApplyAndReverse(t *testing.T) {
 	}
 }
 
+func TestRecipeMediaMigrationPreservesCatalogueAndMealPlans(t *testing.T) {
+	pool := openTestPool(t)
+	resetPlanSchema(t, pool)
+	applyMigration(t, pool, "000001_recipe_catalogue.up.sql")
+	if _, err := NewSeedImporter(pool).Import(t.Context(), loadCanonicalDataset(t)); err != nil {
+		t.Fatalf("import catalogue before migration 3: %v", err)
+	}
+	applyMigration(t, pool, "000002_meal_plans.up.sql")
+	if _, err := pool.Exec(t.Context(), `
+		INSERT INTO meal_plans (
+			chat_id, breakfast_recipe_id, lunch_recipe_id, dinner_recipe_id,
+			revision, created_at, updated_at
+		) VALUES (42, 'R001', 'R021', 'R022', 1, now(), now())`); err != nil {
+		t.Fatalf("insert existing meal plan: %v", err)
+	}
+
+	applyMigration(t, pool, "000003_recipe_steps_media.up.sql")
+	assertCoreCounts := func(stage string) {
+		t.Helper()
+		var recipes, plans int
+		if err := pool.QueryRow(t.Context(), `SELECT (SELECT count(*) FROM recipes), (SELECT count(*) FROM meal_plans)`).Scan(&recipes, &plans); err != nil {
+			t.Fatalf("count records %s: %v", stage, err)
+		}
+		if recipes != 90 || plans != 1 {
+			t.Fatalf("counts %s = recipes:%d plans:%d", stage, recipes, plans)
+		}
+	}
+	assertCoreCounts("after up")
+	applyMigration(t, pool, "000003_recipe_steps_media.down.sql")
+	assertCoreCounts("after down")
+	applyMigration(t, pool, "000002_meal_plans.down.sql")
+	applyMigration(t, pool, "000001_recipe_catalogue.down.sql")
+}
+
 func TestRecipeRepositoryCreateGetRoundTrip(t *testing.T) {
 	pool, repository := newTestRepository(t)
 	entry := testEntry("recipe-round-trip")
+	enrichEntry(&entry)
 
 	if err := repository.Create(t.Context(), entry); err != nil {
 		t.Fatalf("Create() error = %v", err)
@@ -84,8 +123,10 @@ func TestRecipeRepositoryCreateGetRoundTrip(t *testing.T) {
 func TestRecipeRepositoryGetByIDUsesStableSnapshot(t *testing.T) {
 	hook := &queryEndHook{match: "FROM recipes WHERE id = $1"}
 	readerPool := openTestPoolWithTracer(t, hook)
+	applyMigration(t, readerPool, "000003_recipe_steps_media.down.sql")
 	applyMigration(t, readerPool, "000001_recipe_catalogue.down.sql")
 	applyMigration(t, readerPool, "000001_recipe_catalogue.up.sql")
+	applyMigration(t, readerPool, "000003_recipe_steps_media.up.sql")
 	repository := NewRecipeRepository(readerPool)
 	writerPool := openTestPool(t)
 
@@ -143,6 +184,7 @@ func TestRecipeRepositoryGetByIDUsesStableSnapshot(t *testing.T) {
 func TestRecipeRepositoryUpdateSynchronizesCompleteEntry(t *testing.T) {
 	_, repository := newTestRepository(t)
 	entry := testEntry("recipe-update")
+	enrichEntry(&entry)
 	if err := repository.Create(t.Context(), entry); err != nil {
 		t.Fatalf("Create() error = %v", err)
 	}
@@ -169,6 +211,12 @@ func TestRecipeRepositoryUpdateSynchronizesCompleteEntry(t *testing.T) {
 		{ID: "ingredient-rice", Name: "Rice"},
 		{ID: "ingredient-tofu", Name: "Tofu"},
 	}
+	updated.Recipe.Media = []domain.RecipeMedia{
+		{ID: domain.MediaID("media-" + string(entry.Recipe.ID) + "-new"), StorageKey: domain.StorageKey(string(entry.Recipe.ID) + "-new.png"), MIMEType: domain.MediaTypePNG, Width: 900, Height: 600, Caption: "Новая подача"},
+	}
+	updated.Recipe.CoverImageID = nil
+	updated.Recipe.Images = []domain.RecipeImage{{MediaID: updated.Recipe.Media[0].ID, Position: 1}}
+	updated.Recipe.Steps = []domain.RecipeStep{{ID: domain.RecipeStepID("step-" + string(entry.Recipe.ID) + "-new"), Position: 1, Text: "Подавайте блюдо."}}
 
 	if err := repository.Update(t.Context(), updated); err != nil {
 		t.Fatalf("Update() error = %v", err)
@@ -214,8 +262,10 @@ func TestRecipeRepositoryDisablePreservesEntryAndListActiveFiltersIt(t *testing.
 func TestRecipeRepositoryListActiveBulkLoadsCompleteEntriesInOrder(t *testing.T) {
 	counter := &selectCounter{}
 	pool := openTestPoolWithTracer(t, counter)
+	applyMigration(t, pool, "000003_recipe_steps_media.down.sql")
 	applyMigration(t, pool, "000001_recipe_catalogue.down.sql")
 	applyMigration(t, pool, "000001_recipe_catalogue.up.sql")
+	applyMigration(t, pool, "000003_recipe_steps_media.up.sql")
 	repository := NewRecipeRepository(pool)
 
 	last := testEntry("recipe-z")
@@ -237,8 +287,8 @@ func TestRecipeRepositoryListActiveBulkLoadsCompleteEntriesInOrder(t *testing.T)
 	if err != nil {
 		t.Fatalf("ListActive() error = %v", err)
 	}
-	if count := counter.count.Load(); count != 4 {
-		t.Fatalf("ListActive() SELECT count = %d, want 4", count)
+	if count := counter.count.Load(); count != 8 {
+		t.Fatalf("ListActive() SELECT count = %d, want 8", count)
 	}
 
 	want := []recipecatalogue.CatalogueEntry{sortedEntry(first), sortedEntry(last)}
@@ -266,6 +316,7 @@ func TestRecipeRepositoryMapsMissingRecipe(t *testing.T) {
 func TestRecipeRepositoryTransactionsRollBack(t *testing.T) {
 	_, repository := newTestRepository(t)
 	original := testEntry("recipe-original")
+	enrichEntry(&original)
 	if err := repository.Create(t.Context(), original); err != nil {
 		t.Fatalf("seed original recipe: %v", err)
 	}
@@ -293,6 +344,26 @@ func TestRecipeRepositoryTransactionsRollBack(t *testing.T) {
 		got, err := repository.GetByID(t.Context(), original.Recipe.ID)
 		if err != nil {
 			t.Fatalf("GetByID() error = %v", err)
+		}
+		assertEntriesEqual(t, got, original)
+	})
+
+	t.Run("media metadata", func(t *testing.T) {
+		other := testEntry("recipe-other-media")
+		enrichEntry(&other)
+		if err := repository.Create(t.Context(), other); err != nil {
+			t.Fatalf("create other enriched recipe: %v", err)
+		}
+		conflicting := original
+		conflicting.Recipe.Name = "Must also roll back"
+		conflicting.Recipe.Media = append([]domain.RecipeMedia(nil), original.Recipe.Media...)
+		conflicting.Recipe.Media[0].StorageKey = other.Recipe.Media[0].StorageKey
+		if err := repository.Update(t.Context(), conflicting); err == nil {
+			t.Fatal("Update() error = nil, want storage-key conflict")
+		}
+		got, err := repository.GetByID(t.Context(), original.Recipe.ID)
+		if err != nil {
+			t.Fatal(err)
 		}
 		assertEntriesEqual(t, got, original)
 	})
@@ -349,6 +420,11 @@ func TestRecipeSchemaConstraints(t *testing.T) {
 		{name: "blank tag", query: `INSERT INTO recipe_tags (recipe_id, tag) VALUES ($1, $2)`, args: []any{"direct-recipe", " "}},
 		{name: "non-positive quantity", query: `INSERT INTO recipe_ingredients (recipe_id, ingredient_id, quantity, unit) VALUES ($1, $2, $3, $4)`, args: []any{"direct-recipe", "direct-ingredient", 0, "kg"}},
 		{name: "missing ingredient reference", query: `INSERT INTO recipe_ingredients (recipe_id, ingredient_id, quantity, unit) VALUES ($1, $2, $3, $4)`, args: []any{"direct-recipe", "missing", 1, "kg"}},
+		{name: "unsafe media key", query: `INSERT INTO recipe_media (id, recipe_id, storage_key, mime_type, width, height) VALUES ($1, $2, $3, $4, $5, $6)`, args: []any{"media-unsafe", "direct-recipe", "../secret.png", "image/png", 100, 100}},
+		{name: "unsupported media MIME", query: `INSERT INTO recipe_media (id, recipe_id, storage_key, mime_type, width, height) VALUES ($1, $2, $3, $4, $5, $6)`, args: []any{"media-gif", "direct-recipe", "safe.gif", "image/gif", 100, 100}},
+		{name: "excessive media pixels", query: `INSERT INTO recipe_media (id, recipe_id, storage_key, mime_type, width, height) VALUES ($1, $2, $3, $4, $5, $6)`, args: []any{"media-large", "direct-recipe", "large.png", "image/png", 10000, 10000}},
+		{name: "invalid step position", query: `INSERT INTO recipe_steps (id, recipe_id, position, text) VALUES ($1, $2, $3, $4)`, args: []any{"step-zero", "direct-recipe", 0, "Text"}},
+		{name: "blank step text", query: `INSERT INTO recipe_steps (id, recipe_id, position, text) VALUES ($1, $2, $3, $4)`, args: []any{"step-blank", "direct-recipe", 1, " "}},
 	}
 	for _, test := range relationTests {
 		t.Run(test.name, func(t *testing.T) {
@@ -362,8 +438,10 @@ func TestRecipeSchemaConstraints(t *testing.T) {
 func newTestRepository(t *testing.T) (*pgxpool.Pool, *RecipeRepository) {
 	t.Helper()
 	pool := openTestPool(t)
+	applyMigration(t, pool, "000003_recipe_steps_media.down.sql")
 	applyMigration(t, pool, "000001_recipe_catalogue.down.sql")
 	applyMigration(t, pool, "000001_recipe_catalogue.up.sql")
+	applyMigration(t, pool, "000003_recipe_steps_media.up.sql")
 	return pool, NewRecipeRepository(pool)
 }
 
@@ -473,6 +551,24 @@ func testEntry(id string) recipecatalogue.CatalogueEntry {
 	}
 }
 
+func enrichEntry(entry *recipecatalogue.CatalogueEntry) {
+	id := string(entry.Recipe.ID)
+	coverID := domain.MediaID("media-" + id + "-cover")
+	galleryID := domain.MediaID("media-" + id + "-gallery")
+	stepImageID := domain.MediaID("media-" + id + "-step")
+	entry.Recipe.Media = []domain.RecipeMedia{
+		{ID: coverID, StorageKey: domain.StorageKey(id + "-cover.jpg"), MIMEType: domain.MediaTypeJPEG, Width: 1200, Height: 800, AltText: "Готовое блюдо"},
+		{ID: galleryID, StorageKey: domain.StorageKey(id + "-gallery.png"), MIMEType: domain.MediaTypePNG, Width: 800, Height: 600, Caption: "Подача"},
+		{ID: stepImageID, StorageKey: domain.StorageKey(id + "-step.jpg"), MIMEType: domain.MediaTypeJPEG, Width: 640, Height: 480},
+	}
+	entry.Recipe.CoverImageID = &coverID
+	entry.Recipe.Images = []domain.RecipeImage{{MediaID: galleryID, Position: 1}}
+	entry.Recipe.Steps = []domain.RecipeStep{
+		{ID: domain.RecipeStepID("step-" + id + "-1"), Position: 1, Text: "Нарежьте овощи.", ImageID: &stepImageID},
+		{ID: domain.RecipeStepID("step-" + id + "-2"), Position: 2, Text: "Готовьте до мягкости."},
+	}
+}
+
 func assertEntriesEqual(t *testing.T, got, want recipecatalogue.CatalogueEntry) {
 	t.Helper()
 	got = sortedEntry(got)
@@ -486,6 +582,9 @@ func sortedEntry(entry recipecatalogue.CatalogueEntry) recipecatalogue.Catalogue
 	entry.Recipe.MealTypes = append([]domain.MealType(nil), entry.Recipe.MealTypes...)
 	entry.Recipe.Tags = append([]string(nil), entry.Recipe.Tags...)
 	entry.Recipe.Ingredients = append([]domain.RecipeIngredient(nil), entry.Recipe.Ingredients...)
+	entry.Recipe.Steps = append([]domain.RecipeStep(nil), entry.Recipe.Steps...)
+	entry.Recipe.Media = append([]domain.RecipeMedia(nil), entry.Recipe.Media...)
+	entry.Recipe.Images = append([]domain.RecipeImage(nil), entry.Recipe.Images...)
 	entry.Ingredients = append([]domain.Ingredient(nil), entry.Ingredients...)
 	sort.Slice(entry.Recipe.MealTypes, func(i, j int) bool { return entry.Recipe.MealTypes[i] < entry.Recipe.MealTypes[j] })
 	sort.Strings(entry.Recipe.Tags)
@@ -493,6 +592,9 @@ func sortedEntry(entry recipecatalogue.CatalogueEntry) recipecatalogue.Catalogue
 		return entry.Recipe.Ingredients[i].IngredientID < entry.Recipe.Ingredients[j].IngredientID
 	})
 	sort.Slice(entry.Ingredients, func(i, j int) bool { return entry.Ingredients[i].ID < entry.Ingredients[j].ID })
+	sort.Slice(entry.Recipe.Steps, func(i, j int) bool { return entry.Recipe.Steps[i].Position < entry.Recipe.Steps[j].Position })
+	sort.Slice(entry.Recipe.Media, func(i, j int) bool { return entry.Recipe.Media[i].ID < entry.Recipe.Media[j].ID })
+	sort.Slice(entry.Recipe.Images, func(i, j int) bool { return entry.Recipe.Images[i].Position < entry.Recipe.Images[j].Position })
 	return entry
 }
 
