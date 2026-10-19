@@ -19,7 +19,10 @@ import (
 	"github.com/Suhare00/mealprep-bot/internal/domain"
 )
 
-const DefaultMaxBytes int64 = 10 << 20
+const (
+	DefaultMaxBytes    int64 = 10 << 20
+	maxPublishAttempts       = 4
+)
 
 // StoredFile is validated image-file metadata returned after a successful save.
 type StoredFile struct {
@@ -90,11 +93,15 @@ func (s *Filesystem) Save(ctx context.Context, expectedMIME domain.MediaType, so
 		int64(configuration.Width)*int64(configuration.Height) > domain.MaxImagePixels {
 		return StoredFile{}, errors.New("image dimensions exceed supported limits")
 	}
-
-	key, err := s.generatedKey(detected)
+	decoded, decodedFormat, err := image.Decode(bytes.NewReader(contents))
 	if err != nil {
-		return StoredFile{}, err
+		return StoredFile{}, fmt.Errorf("decode image pixels: %w", err)
 	}
+	decodedBounds := decoded.Bounds()
+	if decodedFormat != format || decodedBounds.Dx() != configuration.Width || decodedBounds.Dy() != configuration.Height {
+		return StoredFile{}, errors.New("decoded image metadata is inconsistent")
+	}
+
 	temporary, err := os.CreateTemp(s.root, ".upload-*")
 	if err != nil {
 		return StoredFile{}, fmt.Errorf("create temporary image: %w", err)
@@ -122,10 +129,31 @@ func (s *Filesystem) Save(ctx context.Context, expectedMIME domain.MediaType, so
 	if err := ctx.Err(); err != nil {
 		return StoredFile{}, err
 	}
-	if err := os.Rename(temporaryName, s.path(key)); err != nil {
-		return StoredFile{}, fmt.Errorf("commit image: %w", err)
+	var key domain.StorageKey
+	for attempt := 0; attempt < maxPublishAttempts; attempt++ {
+		key, err = s.generatedKey(detected)
+		if err != nil {
+			return StoredFile{}, err
+		}
+		destination := s.path(key)
+		err = os.Link(temporaryName, destination)
+		if err == nil {
+			if removeErr := os.Remove(temporaryName); removeErr != nil {
+				if cleanupErr := os.Remove(destination); cleanupErr != nil {
+					return StoredFile{}, fmt.Errorf("remove published image temporary link: %w (destination cleanup: %v)", removeErr, cleanupErr)
+				}
+				return StoredFile{}, fmt.Errorf("remove published image temporary link: %w", removeErr)
+			}
+			committed = true
+			break
+		}
+		if !errors.Is(err, os.ErrExist) {
+			return StoredFile{}, fmt.Errorf("publish image: %w", err)
+		}
 	}
-	committed = true
+	if !committed {
+		return StoredFile{}, fmt.Errorf("publish image: generated key collided after %d attempts", maxPublishAttempts)
+	}
 	return StoredFile{StorageKey: key, MIMEType: detected, Width: configuration.Width, Height: configuration.Height, SizeBytes: int64(len(contents))}, nil
 }
 
