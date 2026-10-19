@@ -222,14 +222,92 @@ func TestShoppingListAggregatesOnlyMatchingIngredientAndUnit(t *testing.T) {
 	if !reflect.DeepEqual(items, want) {
 		t.Fatalf("shopping list = %#v, want %#v", items, want)
 	}
+
+	breakfastItems, err := BuildRecipeShoppingList(breakfast)
+	if err != nil {
+		t.Fatalf("BuildRecipeShoppingList(breakfast) error = %v", err)
+	}
+	lunchItems, err := BuildRecipeShoppingList(lunch)
+	if err != nil {
+		t.Fatalf("BuildRecipeShoppingList(lunch) error = %v", err)
+	}
+	if !reflect.DeepEqual(breakfastItems, []ShoppingItem{{IngredientID: "rice", Name: "Рис", Quantity: 100, Unit: "г"}}) ||
+		!reflect.DeepEqual(lunchItems, []ShoppingItem{{IngredientID: "rice", Name: "Рис", Quantity: 250, Unit: "г"}}) {
+		t.Fatalf("per-recipe quantities breakfast=%#v lunch=%#v", breakfastItems, lunchItems)
+	}
 }
 
-func TestShoppingListRejectsInvalidQuantity(t *testing.T) {
-	entry := planEntry("B1", domain.MealTypeBreakfast)
-	entry.Recipe.Ingredients[0].Quantity = 0
-	_, err := BuildShoppingList(Snapshot{Breakfast: entry, Lunch: planEntry("L1", domain.MealTypeLunch), Dinner: planEntry("D1", domain.MealTypeDinner)})
-	if err == nil {
-		t.Fatal("BuildShoppingList() error = nil")
+func TestShoppingViewsRefreshAfterOneSlotReplacement(t *testing.T) {
+	breakfast := planEntry("B1", domain.MealTypeBreakfast)
+	replacement := planEntry("B2", domain.MealTypeBreakfast)
+	lunch := planEntry("L1", domain.MealTypeLunch)
+	dinner := planEntry("D1", domain.MealTypeDinner)
+	setIngredient := func(entry *recipecatalogue.CatalogueEntry, quantity float64) {
+		entry.Recipe.Ingredients = []domain.RecipeIngredient{{IngredientID: "shared", Quantity: quantity, Unit: "г"}}
+		entry.Ingredients = []domain.Ingredient{{ID: "shared", Name: "Общий ингредиент"}}
+	}
+	setIngredient(&breakfast, 100)
+	setIngredient(&replacement, 150)
+	setIngredient(&lunch, 250)
+	setIngredient(&dinner, 50)
+
+	repository := newFakeRepository()
+	repository.states[42] = Stored{
+		IDs: IDs{Breakfast: "B1", Lunch: "L1", Dinner: "D1"}, Revision: 1,
+	}
+	service := newTestService([]recipecatalogue.CatalogueEntry{breakfast, replacement, lunch, dinner}, repository, &sequenceChooser{})
+
+	_, consolidatedBefore, err := service.ShoppingList(t.Context(), 42)
+	if err != nil {
+		t.Fatalf("ShoppingList(before) error = %v", err)
+	}
+	_, breakfastBefore, err := service.RecipeShoppingList(t.Context(), 42, domain.MealTypeBreakfast)
+	if err != nil {
+		t.Fatalf("RecipeShoppingList(before) error = %v", err)
+	}
+	if consolidatedBefore[0].Quantity != 400 || breakfastBefore[0].Quantity != 100 {
+		t.Fatalf("before replacement consolidated=%#v breakfast=%#v", consolidatedBefore, breakfastBefore)
+	}
+
+	if _, err := service.Replace(t.Context(), 42, domain.MealTypeBreakfast, 1); err != nil {
+		t.Fatalf("Replace() error = %v", err)
+	}
+	_, consolidatedAfter, err := service.ShoppingList(t.Context(), 42)
+	if err != nil {
+		t.Fatalf("ShoppingList(after) error = %v", err)
+	}
+	_, breakfastAfter, err := service.RecipeShoppingList(t.Context(), 42, domain.MealTypeBreakfast)
+	if err != nil {
+		t.Fatalf("RecipeShoppingList(breakfast after) error = %v", err)
+	}
+	_, lunchAfter, err := service.RecipeShoppingList(t.Context(), 42, domain.MealTypeLunch)
+	if err != nil {
+		t.Fatalf("RecipeShoppingList(lunch after) error = %v", err)
+	}
+	if consolidatedAfter[0].Quantity != 450 || breakfastAfter[0].Quantity != 150 || lunchAfter[0].Quantity != 250 {
+		t.Fatalf("after replacement consolidated=%#v breakfast=%#v lunch=%#v", consolidatedAfter, breakfastAfter, lunchAfter)
+	}
+}
+
+func TestShoppingListsRejectInvalidIngredientData(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*recipecatalogue.CatalogueEntry)
+	}{
+		{name: "non-positive quantity", mutate: func(entry *recipecatalogue.CatalogueEntry) { entry.Recipe.Ingredients[0].Quantity = 0 }},
+		{name: "missing ingredient name", mutate: func(entry *recipecatalogue.CatalogueEntry) { entry.Ingredients = nil }},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			entry := planEntry("B1", domain.MealTypeBreakfast)
+			test.mutate(&entry)
+			if _, err := BuildShoppingList(Snapshot{Breakfast: entry, Lunch: planEntry("L1", domain.MealTypeLunch), Dinner: planEntry("D1", domain.MealTypeDinner)}); err == nil {
+				t.Fatal("BuildShoppingList() error = nil")
+			}
+			if _, err := BuildRecipeShoppingList(entry); err == nil {
+				t.Fatal("BuildRecipeShoppingList() error = nil")
+			}
+		})
 	}
 }
 

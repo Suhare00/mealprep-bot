@@ -100,6 +100,23 @@ func (s *Service) ShoppingList(ctx context.Context, chatID int64) (Snapshot, []S
 	return snapshot, items, nil
 }
 
+// RecipeShoppingList returns the saved plan and the uncombined ingredient
+// quantities for one meal slot.
+func (s *Service) RecipeShoppingList(ctx context.Context, chatID int64, mealType domain.MealType) (Snapshot, []ShoppingItem, error) {
+	if mealType != domain.MealTypeBreakfast && mealType != domain.MealTypeLunch && mealType != domain.MealTypeDinner {
+		return Snapshot{}, nil, &EligibilityError{MealType: mealType}
+	}
+	snapshot, err := s.Current(ctx, chatID)
+	if err != nil {
+		return Snapshot{}, nil, err
+	}
+	items, err := BuildRecipeShoppingList(snapshot.Entry(mealType))
+	if err != nil {
+		return Snapshot{}, nil, err
+	}
+	return snapshot, items, nil
+}
+
 func (s *Service) loadForMutation(ctx context.Context, chatID, expectedRevision int64) (Stored, error) {
 	stored, err := s.repository.Load(ctx, chatID)
 	if errors.Is(err, ErrNotFound) {

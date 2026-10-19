@@ -11,12 +11,22 @@ import (
 )
 
 func BuildShoppingList(snapshot Snapshot) ([]ShoppingItem, error) {
+	return buildShoppingList([]recipecatalogue.CatalogueEntry{snapshot.Breakfast, snapshot.Lunch, snapshot.Dinner})
+}
+
+// BuildRecipeShoppingList derives one recipe's shopping quantities without
+// combining them with ingredients from the other meal slots.
+func BuildRecipeShoppingList(entry recipecatalogue.CatalogueEntry) ([]ShoppingItem, error) {
+	return buildShoppingList([]recipecatalogue.CatalogueEntry{entry})
+}
+
+func buildShoppingList(entries []recipecatalogue.CatalogueEntry) ([]ShoppingItem, error) {
 	type key struct {
 		id   domain.IngredientID
 		unit string
 	}
 	items := make(map[key]ShoppingItem)
-	for _, entry := range []recipecatalogue.CatalogueEntry{snapshot.Breakfast, snapshot.Lunch, snapshot.Dinner} {
+	for _, entry := range entries {
 		names := make(map[domain.IngredientID]string, len(entry.Ingredients))
 		for _, ingredient := range entry.Ingredients {
 			names[ingredient.ID] = ingredient.Name
