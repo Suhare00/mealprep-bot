@@ -31,6 +31,7 @@ type Planner interface {
 	Generate(ctx context.Context, chatID, expectedRevision int64) (mealplan.Snapshot, error)
 	Replace(ctx context.Context, chatID int64, mealType domain.MealType, expectedRevision int64) (mealplan.Snapshot, error)
 	ShoppingList(ctx context.Context, chatID int64) (mealplan.Snapshot, []mealplan.ShoppingItem, error)
+	RecipeShoppingList(ctx context.Context, chatID int64, mealType domain.MealType) (mealplan.Snapshot, []mealplan.ShoppingItem, error)
 }
 
 // Bot dispatches Telegram updates to the catalogue use case.
@@ -160,7 +161,7 @@ func (b *Bot) routeCallback(ctx context.Context, data string, message Message) e
 		response = mainMenu()
 	case "p":
 		response, err = b.loadPlan(ctx, message.Chat.ID)
-	case "pg", "px", "ps":
+	case "pg", "px", "sm", "sc", "sr":
 		return b.handlePlanAction(ctx, action, message)
 	case "c":
 		response, err = b.loadCatalogue(ctx, action.page)
@@ -203,13 +204,29 @@ func (b *Bot) handlePlanAction(ctx context.Context, action callbackAction, messa
 		snapshot, err = b.planner.Generate(ctx, message.Chat.ID, action.revision)
 	case "px":
 		snapshot, err = b.planner.Replace(ctx, message.Chat.ID, action.mealType, action.revision)
-	case "ps":
-		snapshot, items, err = b.planner.ShoppingList(ctx, message.Chat.ID)
+	case "sm":
+		snapshot, err = b.planner.Current(ctx, message.Chat.ID)
 		if err == nil && snapshot.Revision != action.revision {
-			return b.edit(ctx, message, planMessage(snapshot, "План уже обновился. Показана актуальная версия.\n\n"))
+			return b.edit(ctx, message, staleShoppingPlanMessage(snapshot))
 		}
 		if err == nil {
-			return b.edit(ctx, message, shoppingListMessage(snapshot, items, action.page))
+			return b.edit(ctx, message, shoppingMenuMessage(snapshot))
+		}
+	case "sc":
+		snapshot, items, err = b.planner.ShoppingList(ctx, message.Chat.ID)
+		if err == nil && snapshot.Revision != action.revision {
+			return b.edit(ctx, message, staleShoppingPlanMessage(snapshot))
+		}
+		if err == nil {
+			return b.edit(ctx, message, consolidatedShoppingListMessage(snapshot, items, action.page))
+		}
+	case "sr":
+		snapshot, items, err = b.planner.RecipeShoppingList(ctx, message.Chat.ID, action.mealType)
+		if err == nil && snapshot.Revision != action.revision {
+			return b.edit(ctx, message, staleShoppingPlanMessage(snapshot))
+		}
+		if err == nil {
+			return b.edit(ctx, message, recipeShoppingListMessage(snapshot, action.mealType, items, action.page))
 		}
 	}
 	if err == nil {
@@ -242,6 +259,10 @@ func (b *Bot) handlePlanAction(ctx context.Context, action callbackAction, messa
 		}
 		return errors.Join(err, b.edit(ctx, message, planProcessingErrorMessage()))
 	}
+}
+
+func staleShoppingPlanMessage(snapshot mealplan.Snapshot) OutgoingMessage {
+	return planMessage(snapshot, "План уже обновился. Показана актуальная версия.\n\n")
 }
 
 func (b *Bot) loadCatalogue(ctx context.Context, page int) (OutgoingMessage, error) {

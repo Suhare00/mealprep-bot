@@ -100,7 +100,28 @@ func TestBotPlanCallbacks(t *testing.T) {
 }
 
 func TestBotShoppingListAndStalePlanCallbacks(t *testing.T) {
-	t.Run("shopping list", func(t *testing.T) {
+	t.Run("shopping menu", func(t *testing.T) {
+		client := &fakeClient{}
+		planner := &fakePlanner{snapshot: telegramPlanSnapshot(4)}
+		bot := NewBot(client, &fakeCatalogue{}, planner, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err := bot.HandleUpdate(t.Context(), callbackUpdate("sm:4")); err != nil {
+			t.Fatal(err)
+		}
+		message := client.edited[0].message
+		for _, want := range []string{"Общий список", "По блюдам", "Овсяная каша", "Тушёные овощи", "Запеканка"} {
+			if !strings.Contains(message.Text, want) {
+				t.Fatalf("shopping menu text = %q, want %q", message.Text, want)
+			}
+		}
+		wantCallbacks := []string{"sc:4:0", "sr:b:4:0", "sr:l:4:0", "sr:d:4:0"}
+		for index, want := range wantCallbacks {
+			if got := message.ReplyMarkup.InlineKeyboard[index][0].CallbackData; got != want {
+				t.Fatalf("shopping menu callback %d = %q, want %q", index, got, want)
+			}
+		}
+	})
+
+	t.Run("consolidated shopping list and legacy callback", func(t *testing.T) {
 		client := &fakeClient{}
 		planner := &fakePlanner{
 			snapshot: telegramPlanSnapshot(4),
@@ -114,10 +135,36 @@ func TestBotShoppingListAndStalePlanCallbacks(t *testing.T) {
 			t.Fatal(err)
 		}
 		text := client.edited[0].message.Text
-		for _, want := range []string{"Список покупок", "Рис — 1.25 кг", "Морковь — 500 г"} {
+		for _, want := range []string{"Общий список покупок", "Рис — 1.25 кг", "Морковь — 500 г"} {
 			if !strings.Contains(text, want) {
 				t.Fatalf("shopping text = %q, want %q", text, want)
 			}
+		}
+	})
+
+	t.Run("recipe shopping list", func(t *testing.T) {
+		client := &fakeClient{}
+		planner := &fakePlanner{
+			snapshot: telegramPlanSnapshot(4),
+			recipeItems: map[domain.MealType][]mealplan.ShoppingItem{
+				domain.MealTypeBreakfast: {{IngredientID: "oats", Name: "Овсяные хлопья", Quantity: 450, Unit: "г"}},
+			},
+		}
+		bot := NewBot(client, &fakeCatalogue{}, planner, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err := bot.HandleUpdate(t.Context(), callbackUpdate("sr:b:4:0")); err != nil {
+			t.Fatal(err)
+		}
+		text := client.edited[0].message.Text
+		for _, want := range []string{"Завтрак: Овсяная каша", "6 порций", "Овсяные хлопья — 450 г"} {
+			if !strings.Contains(text, want) {
+				t.Fatalf("recipe shopping text = %q, want %q", text, want)
+			}
+		}
+		if !reflect.DeepEqual(planner.recipeShoppingMeals, []domain.MealType{domain.MealTypeBreakfast}) {
+			t.Fatalf("recipe shopping meals = %v", planner.recipeShoppingMeals)
+		}
+		if !reflect.DeepEqual(planner.chatIDs, []int64{42}) {
+			t.Fatalf("recipe shopping chat IDs = %v", planner.chatIDs)
 		}
 	})
 
@@ -129,7 +176,7 @@ func TestBotShoppingListAndStalePlanCallbacks(t *testing.T) {
 		}
 		planner := &fakePlanner{snapshot: telegramPlanSnapshot(4), items: items}
 		bot := NewBot(client, &fakeCatalogue{}, planner, slog.New(slog.NewTextHandler(io.Discard, nil)))
-		if err := bot.HandleUpdate(t.Context(), callbackUpdate("ps:4:1")); err != nil {
+		if err := bot.HandleUpdate(t.Context(), callbackUpdate("sc:4:1")); err != nil {
 			t.Fatal(err)
 		}
 		message := client.edited[0].message
@@ -138,6 +185,40 @@ func TestBotShoppingListAndStalePlanCallbacks(t *testing.T) {
 		}
 		if len(message.ReplyMarkup.InlineKeyboard) < 3 {
 			t.Fatalf("shopping page keyboard = %#v", message.ReplyMarkup)
+		}
+	})
+
+	t.Run("recipe shopping list pagination", func(t *testing.T) {
+		client := &fakeClient{}
+		items := make([]mealplan.ShoppingItem, 25)
+		for i := range items {
+			items[i] = mealplan.ShoppingItem{IngredientID: domain.IngredientID(fmt.Sprintf("I%02d", i)), Name: fmt.Sprintf("Продукт %02d", i), Quantity: float64(i + 1), Unit: "шт"}
+		}
+		planner := &fakePlanner{
+			snapshot:    telegramPlanSnapshot(4),
+			recipeItems: map[domain.MealType][]mealplan.ShoppingItem{domain.MealTypeDinner: items},
+		}
+		bot := NewBot(client, &fakeCatalogue{}, planner, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err := bot.HandleUpdate(t.Context(), callbackUpdate("sr:d:4:1")); err != nil {
+			t.Fatal(err)
+		}
+		message := client.edited[0].message
+		if !strings.Contains(message.Text, "Ужин: Запеканка") || !strings.Contains(message.Text, "Страница 2 из 3") ||
+			!strings.Contains(message.Text, "Продукт 12") || strings.Contains(message.Text, "Продукт 24") {
+			t.Fatalf("recipe shopping page = %q", message.Text)
+		}
+	})
+
+	t.Run("stale shopping view returns latest plan", func(t *testing.T) {
+		client := &fakeClient{}
+		planner := &fakePlanner{snapshot: telegramPlanSnapshot(5)}
+		bot := NewBot(client, &fakeCatalogue{}, planner, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		if err := bot.HandleUpdate(t.Context(), callbackUpdate("sr:l:4:0")); err != nil {
+			t.Fatal(err)
+		}
+		text := client.edited[0].message.Text
+		if !strings.Contains(text, "План уже обновился") || !strings.Contains(text, "План питания на 3 дня") || strings.Contains(text, "Страница") {
+			t.Fatalf("stale shopping response = %q", text)
 		}
 	})
 
@@ -152,6 +233,25 @@ func TestBotShoppingListAndStalePlanCallbacks(t *testing.T) {
 			t.Fatalf("stale response = %#v", client.edited)
 		}
 	})
+}
+
+func TestShoppingCallbacksStayWithinTelegramLimit(t *testing.T) {
+	snapshot := telegramPlanSnapshot(9223372036854775807)
+	messages := []OutgoingMessage{
+		planMessage(snapshot, ""),
+		shoppingMenuMessage(snapshot),
+		consolidatedShoppingListMessage(snapshot, nil, 999999),
+		recipeShoppingListMessage(snapshot, domain.MealTypeBreakfast, nil, 999999),
+	}
+	for _, message := range messages {
+		for _, row := range message.ReplyMarkup.InlineKeyboard {
+			for _, button := range row {
+				if len(button.CallbackData) > maxCallbackBytes {
+					t.Fatalf("callback %q is %d bytes", button.CallbackData, len(button.CallbackData))
+				}
+			}
+		}
+	}
 }
 
 func TestBotPlanFriendlyErrors(t *testing.T) {
@@ -525,7 +625,7 @@ func TestBotIgnoresUnsupportedAndNonPrivateUpdates(t *testing.T) {
 	updates := []Update{
 		{},
 		{Message: &Message{Chat: Chat{ID: -1, Type: "group"}, Text: "/start"}},
-		{CallbackQuery: &CallbackQuery{ID: "group-callback", Message: &Message{Chat: Chat{ID: -1, Type: "group"}}, Data: "m"}},
+		{CallbackQuery: &CallbackQuery{ID: "group-callback", Message: &Message{Chat: Chat{ID: -1, Type: "group"}}, Data: "sm:1"}},
 	}
 	for _, update := range updates {
 		if err := bot.HandleUpdate(t.Context(), update); err != nil {
@@ -797,16 +897,19 @@ type fakeCatalogue struct {
 }
 
 type fakePlanner struct {
-	snapshot     mealplan.Snapshot
-	items        []mealplan.ShoppingItem
-	currentErr   error
-	generateErr  error
-	replaceErr   error
-	shoppingErr  error
-	generateRevs []int64
-	replaceMeal  []domain.MealType
-	replaceRevs  []int64
-	chatIDs      []int64
+	snapshot            mealplan.Snapshot
+	items               []mealplan.ShoppingItem
+	currentErr          error
+	generateErr         error
+	replaceErr          error
+	shoppingErr         error
+	recipeItems         map[domain.MealType][]mealplan.ShoppingItem
+	recipeShoppingErr   error
+	recipeShoppingMeals []domain.MealType
+	generateRevs        []int64
+	replaceMeal         []domain.MealType
+	replaceRevs         []int64
+	chatIDs             []int64
 }
 
 func (f *fakePlanner) Current(_ context.Context, chatID int64) (mealplan.Snapshot, error) {
@@ -830,6 +933,12 @@ func (f *fakePlanner) Replace(_ context.Context, chatID int64, mealType domain.M
 func (f *fakePlanner) ShoppingList(_ context.Context, chatID int64) (mealplan.Snapshot, []mealplan.ShoppingItem, error) {
 	f.chatIDs = append(f.chatIDs, chatID)
 	return f.snapshot, f.items, f.shoppingErr
+}
+
+func (f *fakePlanner) RecipeShoppingList(_ context.Context, chatID int64, mealType domain.MealType) (mealplan.Snapshot, []mealplan.ShoppingItem, error) {
+	f.chatIDs = append(f.chatIDs, chatID)
+	f.recipeShoppingMeals = append(f.recipeShoppingMeals, mealType)
+	return f.snapshot, f.recipeItems[mealType], f.recipeShoppingErr
 }
 
 func (f *fakeCatalogue) ListActive(context.Context) ([]recipecatalogue.CatalogueEntry, error) {
