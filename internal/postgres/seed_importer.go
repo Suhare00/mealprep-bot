@@ -131,6 +131,12 @@ func ensureSeedRecipe(ctx context.Context, tx pgx.Tx, expected recipecatalogue.C
 }
 
 func normalizedEntry(entry recipecatalogue.CatalogueEntry) recipecatalogue.CatalogueEntry {
+	// Steps and media are user-owned enrichment. Canonical seed imports compare
+	// only the core catalogue fields and must neither conflict with nor erase it.
+	entry.Recipe.Steps = nil
+	entry.Recipe.Media = nil
+	entry.Recipe.CoverImageID = nil
+	entry.Recipe.Images = nil
 	entry.Recipe.MealTypes = append([]domain.MealType(nil), entry.Recipe.MealTypes...)
 	entry.Recipe.Tags = append([]string(nil), entry.Recipe.Tags...)
 	entry.Recipe.Ingredients = append([]domain.RecipeIngredient(nil), entry.Recipe.Ingredients...)

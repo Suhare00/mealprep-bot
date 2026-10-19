@@ -56,7 +56,10 @@ func updateRecipe(ctx context.Context, tx pgx.Tx, recipe domain.Recipe) (bool, e
 }
 
 func clearRelations(ctx context.Context, tx pgx.Tx, recipeID domain.RecipeID) error {
-	for _, table := range []string{"recipe_ingredients", "recipe_tags", "recipe_meal_types"} {
+	for _, table := range []string{
+		"recipe_steps", "recipe_images", "recipe_cover_images", "recipe_media",
+		"recipe_ingredients", "recipe_tags", "recipe_meal_types",
+	} {
 		if _, err := tx.Exec(ctx, "DELETE FROM "+table+" WHERE recipe_id = $1", string(recipeID)); err != nil {
 			return fmt.Errorf("delete from %s: %w", table, err)
 		}
@@ -118,5 +121,59 @@ func insertOwnedRelations(ctx context.Context, tx pgx.Tx, entry recipecatalogue.
 		}
 	}
 
+	mediaItems := append([]domain.RecipeMedia(nil), entry.Recipe.Media...)
+	sort.Slice(mediaItems, func(i, j int) bool { return mediaItems[i].ID < mediaItems[j].ID })
+	for _, media := range mediaItems {
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO recipe_media (
+				id, recipe_id, storage_key, mime_type, width, height, alt_text, caption
+			) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+			string(media.ID), string(entry.Recipe.ID), string(media.StorageKey), string(media.MIMEType),
+			media.Width, media.Height, nullableText(media.AltText), nullableText(media.Caption),
+		); err != nil {
+			return fmt.Errorf("insert media %q: %w", media.ID, err)
+		}
+	}
+	if entry.Recipe.CoverImageID != nil {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO recipe_cover_images (recipe_id, media_id) VALUES ($1, $2)`,
+			string(entry.Recipe.ID), string(*entry.Recipe.CoverImageID),
+		); err != nil {
+			return fmt.Errorf("insert cover image: %w", err)
+		}
+	}
+	images := append([]domain.RecipeImage(nil), entry.Recipe.Images...)
+	sort.Slice(images, func(i, j int) bool { return images[i].Position < images[j].Position })
+	for _, image := range images {
+		if _, err := tx.Exec(ctx,
+			`INSERT INTO recipe_images (recipe_id, media_id, position) VALUES ($1, $2, $3)`,
+			string(entry.Recipe.ID), string(image.MediaID), image.Position,
+		); err != nil {
+			return fmt.Errorf("insert additional image at position %d: %w", image.Position, err)
+		}
+	}
+	steps := append([]domain.RecipeStep(nil), entry.Recipe.Steps...)
+	sort.Slice(steps, func(i, j int) bool { return steps[i].Position < steps[j].Position })
+	for _, step := range steps {
+		var imageID any
+		if step.ImageID != nil {
+			imageID = string(*step.ImageID)
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO recipe_steps (id, recipe_id, position, text, image_media_id)
+			VALUES ($1, $2, $3, $4, $5)`,
+			string(step.ID), string(entry.Recipe.ID), step.Position, step.Text, imageID,
+		); err != nil {
+			return fmt.Errorf("insert step at position %d: %w", step.Position, err)
+		}
+	}
+
 	return nil
+}
+
+func nullableText(value string) any {
+	if value == "" {
+		return nil
+	}
+	return value
 }
