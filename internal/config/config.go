@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -14,6 +15,7 @@ const (
 	envAppEnvironment   = "APP_ENV"
 	envDatabaseURL      = "DATABASE_URL"
 	envLogLevel         = "LOG_LEVEL"
+	envMediaRoot        = "MEDIA_ROOT"
 	envTelegramBotToken = "TELEGRAM_BOT_TOKEN"
 )
 
@@ -23,6 +25,7 @@ type Config struct {
 	DatabaseURL      string
 	TelegramBotToken string
 	LogLevel         slog.Level
+	MediaRoot        string
 }
 
 // Load reads configuration from environment variables and fails on missing or invalid values.
@@ -49,13 +52,29 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	mediaRoot, err := mediaRootPath(os.Getenv(envMediaRoot))
+	if err != nil {
+		return Config{}, err
+	}
 
 	return Config{
 		Environment:      environment,
 		DatabaseURL:      databaseURL,
 		TelegramBotToken: telegramBotToken,
 		LogLevel:         logLevel,
+		MediaRoot:        mediaRoot,
 	}, nil
+}
+
+func mediaRootPath(value string) (string, error) {
+	if strings.TrimSpace(value) == "" {
+		value = filepath.Join("data", "media")
+	}
+	absolute, err := filepath.Abs(value)
+	if err != nil {
+		return "", fmt.Errorf("%s is invalid: %w", envMediaRoot, err)
+	}
+	return filepath.Clean(absolute), nil
 }
 
 // LoadDatabaseURL reads and validates the PostgreSQL connection URL.
