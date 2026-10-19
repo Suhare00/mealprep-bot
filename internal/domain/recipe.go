@@ -25,6 +25,10 @@ type Recipe struct {
 	Tags                []string
 	State               RecipeState
 	Ingredients         []RecipeIngredient
+	Steps               []RecipeStep
+	Media               []RecipeMedia
+	CoverImageID        *MediaID
+	Images              []RecipeImage
 }
 
 // Validate checks all recipe and recipe-ingredient invariants.
@@ -90,6 +94,9 @@ func (r Recipe) Validate() error {
 		if err := ingredient.Validate(); err != nil {
 			return fmt.Errorf("ingredient at index %d: %w", index, err)
 		}
+	}
+	if err := validateRecipeEnrichment(r); err != nil {
+		return err
 	}
 
 	return nil

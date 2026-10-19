@@ -6,6 +6,32 @@ type RecipeID string
 // IngredientID uniquely identifies an ingredient independently of its persistence representation.
 type IngredientID string
 
+// RecipeStepID uniquely identifies one preparation step.
+type RecipeStepID string
+
+// MediaID uniquely identifies recipe media metadata independently of storage.
+type MediaID string
+
+// StorageKey is an opaque, single-segment key assigned by a media store.
+type StorageKey string
+
+// MediaType is the validated MIME type of a stored recipe image.
+type MediaType string
+
+const (
+	MediaTypeJPEG MediaType = "image/jpeg"
+	MediaTypePNG  MediaType = "image/png"
+)
+
+func (m MediaType) valid() bool {
+	switch m {
+	case MediaTypeJPEG, MediaTypePNG:
+		return true
+	default:
+		return false
+	}
+}
+
 // MealType identifies when a recipe is intended to be served.
 type MealType string
 
