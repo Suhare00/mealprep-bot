@@ -12,7 +12,9 @@ FROM alpine:3.23
 
 RUN apk add --no-cache ca-certificates \
     && addgroup -S app \
-    && adduser -S -G app app
+    && adduser -S -G app app \
+    && mkdir -p /var/lib/mealprep/media \
+    && chown -R app:app /var/lib/mealprep
 
 COPY --from=build /out/mealprep-bot /usr/local/bin/mealprep-bot
 

@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/Suhare00/mealprep-bot/internal/config"
+	"github.com/Suhare00/mealprep-bot/internal/media"
 	mealplan "github.com/Suhare00/mealprep-bot/internal/plan"
 	"github.com/Suhare00/mealprep-bot/internal/postgres"
 	recipecatalogue "github.com/Suhare00/mealprep-bot/internal/recipe"
@@ -48,6 +49,9 @@ func main() {
 }
 
 func run(ctx context.Context, cfg config.Config, logger *slog.Logger) error {
+	if _, err := media.NewFilesystem(cfg.MediaRoot); err != nil {
+		return errors.New("prepare recipe media storage: storage is unavailable")
+	}
 	pool, err := pgxpool.New(ctx, cfg.DatabaseURL)
 	if err != nil {
 		return errors.New("configure PostgreSQL pool: invalid connection configuration")

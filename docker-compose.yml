@@ -7,12 +7,15 @@ services:
       LOG_LEVEL: ${LOG_LEVEL:-info}
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:?set TELEGRAM_BOT_TOKEN in .env}
       DATABASE_URL: postgres://${POSTGRES_USER:-mealprep}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@postgres:5432/${POSTGRES_DB:-mealprep}?sslmode=disable
+      MEDIA_ROOT: /var/lib/mealprep/media
     depends_on:
       postgres:
         condition: service_healthy
     init: true
     restart: unless-stopped
     stop_grace_period: 10s
+    volumes:
+      - recipe-media:/var/lib/mealprep/media
 
   postgres:
     image: postgres:18-alpine
@@ -33,4 +36,5 @@ services:
 
 volumes:
   postgres-data:
+  recipe-media:
 

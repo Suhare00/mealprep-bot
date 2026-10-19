@@ -98,7 +98,7 @@ To run a Go process directly on the host, export the variables from `.env` in th
 go run ./cmd/bot
 ```
 
-The bot validates `APP_ENV`, `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, and optional `LOG_LEVEL`, connects to PostgreSQL, verifies connectivity, checks that no Telegram webhook is active, and then starts long polling. `SIGINT` and `SIGTERM` cancel polling and close the database pool cleanly. Logs are structured JSON and runtime errors redact configured credentials.
+The bot validates `APP_ENV`, `DATABASE_URL`, `TELEGRAM_BOT_TOKEN`, optional `LOG_LEVEL`, and optional `MEDIA_ROOT`. For a host-side run, `MEDIA_ROOT` defaults to the absolute form of `./data/media`; Compose sets it to `/var/lib/mealprep/media`. Startup verifies that this directory is writable, connects to PostgreSQL, verifies connectivity, checks that no Telegram webhook is active, and then starts long polling. `SIGINT` and `SIGTERM` cancel polling and close the database pool cleanly. Logs are structured JSON and runtime errors redact configured credentials.
 
 Run the same checks used by CI with:
 
@@ -112,7 +112,7 @@ Individual targets are available for `fmt`, `fmt-check`, `vet`, `test`, `build`,
 
 Recipe catalogue migrations are explicit SQL files under `migrations/`. Durations are stored as whole seconds in `BIGINT` columns and ingredient quantities use PostgreSQL `NUMERIC`.
 
-For a fresh database, start PostgreSQL and apply both migrations once, in order:
+For a fresh database, start PostgreSQL and apply all three migrations once, in order:
 
 ```sh
 docker compose up -d postgres
@@ -120,7 +120,7 @@ make migrate-up
 make seed
 ```
 
-`make migrate-up` is for a clean database: it applies the recipe catalogue schema and then the meal-plan schema. Do not run it against a volume where migration 1 is already installed. The safe upgrade command for that case is documented below.
+`make migrate-up` is for a clean database: it applies the recipe catalogue, meal-plan, and recipe-enrichment schemas in order. Do not run it against a volume where migration 1 is already installed. The safe upgrade command for that case is documented below.
 
 `make seed` reads `DATABASE_URL` from the environment. When using the values from `.env`, export them into the current shell before running host-side Go commands. The seed CLI can also read another directory with `go run ./cmd/seed -dir /path/to/seed`.
 
@@ -130,7 +130,11 @@ Reverse both migrations in dependency-safe order with:
 make migrate-down
 ```
 
-The migration targets run `psql` inside the Compose PostgreSQL container and use its configured `POSTGRES_USER` and `POSTGRES_DB` values. `make migrate-plan-up` and `make migrate-plan-down` apply only migration 2.
+The migration targets run `psql` inside the Compose PostgreSQL container and use its configured `POSTGRES_USER` and `POSTGRES_DB` values. `make migrate-plan-up` / `make migrate-plan-down` apply only migration 2, while `make migrate-media-up` / `make migrate-media-down` apply only migration 3.
+
+Migration 3 adds optional ordered recipe steps and image metadata. Steps use stable IDs, contiguous 1-based positions, UTF-8 text, and an optional image reference. Image bytes are never stored in PostgreSQL: the database stores stable media IDs, opaque storage keys, JPEG/PNG MIME types, decoded dimensions, and optional alt text/captions. Cover images, ordered additional images, and step images are explicit relations. Recipes with no steps are valid and mean “instructions not provided”; the canonical 90 recipes intentionally remain in that state.
+
+The filesystem adapter accepts only content-verified JPEG and PNG files up to 10 MiB, with dimensions no larger than 10,000 pixels on either side and no more than 40 million decoded pixels. It generates opaque file names, rejects path-like keys, writes through a private temporary file, and atomically renames completed files. Stored files use owner-only permissions on Linux. PostgreSQL updates remain atomic, but PostgreSQL and the filesystem cannot share one transaction: an upload workflow must save the file first, delete it if metadata persistence fails, commit replacement metadata before deleting superseded files, and retain failed cleanup items for reconciliation. Admin upload/edit orchestration belongs to Issue #16.
 
 ## Canonical recipe seed
 
@@ -223,25 +227,27 @@ docker compose stop app
 git pull
 docker compose up -d postgres
 make migrate-plan-up
+make migrate-media-up
 docker compose build app
 docker compose up -d app
 ```
 
-`make migrate-plan-up` applies only `000002_meal_plans.up.sql`; it does not modify recipe or seed rows. Do not use `docker compose down -v`, `make migrate-up`, or `make seed` for this upgrade.
+Apply only migrations that are not already installed. `make migrate-plan-up` is needed only for a database that does not yet contain migration 2; `make migrate-media-up` applies only `000003_recipe_steps_media.up.sql`. Migration 3 is additive and does not rewrite recipe, seed, ingredient, or saved-plan rows. Do not use `docker compose down -v`, `make migrate-up`, or `make seed` for this upgrade.
 
-On Windows PowerShell without Make, run the equivalent commands below from the repository root. They copy and apply only migration 2 inside the existing PostgreSQL container:
+For a database already upgraded through migration 2 (the normal post-PR #25 state), run these exact PowerShell commands from the repository root to apply only migration 3:
 
 ```powershell
 docker compose stop app
 git pull
 docker compose up -d postgres
-docker compose cp .\migrations\000002_meal_plans.up.sql postgres:/tmp/000002_meal_plans.up.sql
-docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /tmp/000002_meal_plans.up.sql'
+docker compose cp .\migrations\000003_recipe_steps_media.up.sql postgres:/tmp/000003_recipe_steps_media.up.sql
+docker compose exec -T postgres sh -c 'psql -v ON_ERROR_STOP=1 -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /tmp/000003_recipe_steps_media.up.sql'
 docker compose build app
 docker compose up -d app
+docker compose ps app postgres
 ```
 
-These commands preserve the existing PostgreSQL volume and all 90 imported recipes. Do not run `make migrate-up`, `make seed`, `docker compose down -v`, or any volume-removal/reset command during this upgrade.
+These commands preserve the already-filled `.env`, existing `postgres-data` volume, all 90 imported recipes, and saved plans. The rebuilt app creates and mounts the separate `recipe-media` named volume at `/var/lib/mealprep/media`; Docker initializes it with ownership suitable for the non-root `app` user. Do not run `make migrate-up`, `make seed`, `docker compose down -v`, or any volume-removal/reset command during this upgrade.
 
 After restart, send `/plan`, generate a plan, open the shopping list, replace one slot, then run:
 
@@ -259,6 +265,33 @@ docker compose ps app postgres
 ```
 
 After both services report running, send `/plan` again and confirm that the plan created before the restart is unchanged.
+
+## Recipe media backup and restore
+
+Recipe media has two coordinated parts: metadata in PostgreSQL and files in the Compose `recipe-media` volume. Back up both while the app is stopped so they represent one logical point in time. These PowerShell commands avoid text redirection for the PostgreSQL custom-format dump:
+
+```powershell
+docker compose stop app
+New-Item -ItemType Directory -Force .\backup | Out-Null
+docker compose exec -T postgres sh -c 'pg_dump -Fc -U "$POSTGRES_USER" -d "$POSTGRES_DB" -f /tmp/mealprep.dump'
+docker compose cp postgres:/tmp/mealprep.dump .\backup\mealprep.dump
+$backupDir = (Resolve-Path .\backup).Path
+docker compose run --rm --no-deps -v "${backupDir}:/backup" --entrypoint sh app -c 'tar -C /var/lib/mealprep/media -czf /backup/recipe-media.tar.gz .'
+docker compose up -d app
+```
+
+Restore only into the intended database and media volume, with the app stopped. `pg_restore --clean` replaces objects in that target database, so verify the Compose project and backup first:
+
+```powershell
+docker compose stop app
+docker compose cp .\backup\mealprep.dump postgres:/tmp/mealprep.dump
+docker compose exec -T postgres sh -c 'pg_restore --clean --if-exists -U "$POSTGRES_USER" -d "$POSTGRES_DB" /tmp/mealprep.dump'
+$backupDir = (Resolve-Path .\backup).Path
+docker compose run --rm --no-deps -v "${backupDir}:/backup:ro" --entrypoint sh app -c 'find /var/lib/mealprep/media -mindepth 1 -maxdepth 1 -type f -delete && tar -C /var/lib/mealprep/media -xzf /backup/recipe-media.tar.gz'
+docker compose up -d app
+```
+
+The concrete media volume name is Compose-project-specific; `docker volume ls` shows it, normally ending in `_recipe-media`. Never remove either the PostgreSQL or media volume unless a verified backup exists. Missing files are treated as broken data, not as an empty-instructions state. There is currently no Telegram photo rendering (#17) or authenticated admin upload/edit UI (#16), and no instructions or images are invented for canonical seed recipes.
 
 ## PostgreSQL integration tests
 
@@ -284,7 +317,7 @@ $env:TEST_DATABASE_URL = 'postgres://mealprep:your-local-password@localhost:5432
 make test-integration
 ```
 
-The integration suite drops and recreates the recipe and meal-plan tables, so never point `TEST_DATABASE_URL` at production or a database containing data you need.
+The integration suite drops and recreates the recipe, recipe-enrichment, and meal-plan tables, so never point `TEST_DATABASE_URL` at production or a database containing data you need.
 
 ## Development approach
 

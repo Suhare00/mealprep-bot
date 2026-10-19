@@ -23,6 +23,9 @@ func TestLoad(t *testing.T) {
 	if cfg.DatabaseURL == "" || cfg.TelegramBotToken == "" {
 		t.Error("required sensitive settings were not loaded")
 	}
+	if cfg.MediaRoot == "" {
+		t.Error("MediaRoot was not resolved")
+	}
 }
 
 func TestLoadRejectsMissingRequiredSetting(t *testing.T) {
